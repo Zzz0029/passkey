@@ -4,7 +4,6 @@
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
 <title>QR Scanner in about:blank — PoC</title>
-<meta name="description" content="Security research: QR-triggered JS executor in about:blank popup">
 <style>
   * { box-sizing: border-box; }
   body { font-family: system-ui, -apple-system, sans-serif; max-width: 860px; margin: 0 auto; padding: 24px; line-height: 1.55; background: #f7f7f7; color: #222; }
@@ -12,6 +11,7 @@
   h2 { font-size: 1.05em; margin-top: 0; }
   .warn { background: #fff3cd; border-left: 4px solid #ffc107; padding: 12px 14px; border-radius: 4px; margin: 12px 0; font-size: 14px; }
   .danger { background: #f8d7da; border-left: 4px solid #dc3545; padding: 12px 14px; border-radius: 4px; margin: 12px 0; font-size: 14px; }
+  .info { background: #d1ecf1; border-left: 4px solid #17a2b8; padding: 12px 14px; border-radius: 4px; margin: 12px 0; font-size: 14px; }
   .card { background: #fff; border-radius: 8px; padding: 20px; box-shadow: 0 1px 3px rgba(0,0,0,0.08); margin: 16px 0; }
   button { padding: 12px 22px; font-size: 15px; border-radius: 6px; border: 0; cursor: pointer; background: #007bff; color: #fff; font-weight: 500; margin: 4px 4px 4px 0; }
   button:hover:not(:disabled) { background: #0056b3; }
@@ -27,6 +27,8 @@
   #diag div { margin: 3px 0; }
   #diag .label { color: #666; display: inline-block; width: 200px; }
   #status { margin-top: 12px; display: none; }
+  #preview { display: none; margin-top: 12px; }
+  #preview video { width: 100%; max-width: 320px; border-radius: 8px; background: #000; display: block; }
   #iframeFallback { display: none; margin-top: 16px; }
   #iframeFallback iframe { width: 100%; height: 820px; border: 1px solid #ddd; border-radius: 6px; background: #fff; }
 </style>
@@ -37,12 +39,11 @@
 
 <div class="danger"><strong>⚠️ SECURITY RESEARCH TOOL</strong> — jalankan hanya di <code>localhost</code> / domain Anda sendiri.</div>
 
-<div class="warn">
-  <strong>Deploy di Vercel?</strong>
-  <ul style="margin:6px 0 0 0;">
-    <li>Klik ikon 🔒/🚫 di address bar → izinkan <strong>popups</strong> + <strong>camera</strong>.</li>
-    <li>Kalau popup diblokir, scanner otomatis pindah ke iframe fallback di bawah.</li>
-  </ul>
+<div class="info">
+  <strong>ℹ️ Kenapa kamera di-pass dari parent?</strong><br>
+  Chromium <strong>tidak mengizinkan</strong> <code>getUserMedia</code> dipanggil dari popup <code>about:blank</code> — dialog permission tidak muncul, langsung <code>NotAllowedError</code>. Ini <em>by design</em>.<br>
+  Solusi: akses kamera di parent, lalu pass <code>MediaStream</code> ke popup via <code>video.srcObject</code> (same-origin OK).<br>
+  PoC tetap valid: dialog <strong>Bluetooth/USB/Serial/HID/Passkey</strong> tetap dipicu dari dalam popup <code>about:blank</code>.
 </div>
 
 <div id="diag">
@@ -50,21 +51,22 @@
   <div><span class="label">location.origin:</span><strong id="d-origin">?</strong></div>
   <div><span class="label">camera permission:</span><strong id="d-camperm">?</strong></div>
   <div><span class="label">BarcodeDetector:</span><strong id="d-bd">?</strong></div>
-  <div><span class="label">window.open:</span><strong id="d-open">?</strong></div>
+  <div><span class="label">warmStream:</span><strong id="d-warm">none</strong></div>
 </div>
 
 <div class="card">
   <h2>Langkah</h2>
   <ol>
-    <li><strong>Grant Camera Permission</strong> — wajib, supaya popup <code>about:blank</code> bisa akses kamera.</li>
-    <li><strong>Open QR Scanner</strong> — popup <code>about:blank</code> terbuka. Kalau diblokir → iframe fallback.</li>
-    <li>Scan QR (kamera atau upload foto), klik <strong>Execute</strong>.</li>
-    <li>Permission dialog (Bluetooth/USB/Passkey/dll.) tampil dengan <code>about:blank</code> → bug terbukti.</li>
+    <li><strong>Grant Camera Permission</strong> — buka kamera di parent, stream disimpan.</li>
+    <li><strong>Open QR Scanner</strong> — popup <code>about:blank</code> terbuka, stream dipass ke popup.</li>
+    <li>Di popup: <strong>Start Scanning</strong> → scan QR.</li>
+    <li><strong>Execute</strong> → dialog permission (Bluetooth/USB/Passkey/dll.) tampil dengan <code>about:blank</code> → bug terbukti.</li>
   </ol>
   <button id="warmBtn" class="success">1. ✅ Grant Camera Permission</button>
   <button id="openBtn" disabled>2. ▶ Open QR Scanner (about:blank)</button>
   <button id="testBtn" class="gray">🧪 Test Popup</button>
   <div id="status"></div>
+  <div id="preview"><video id="previewVideo" autoplay playsinline muted></video></div>
 </div>
 
 <div id="iframeFallback">
@@ -80,6 +82,9 @@
   var $ = function (id) { return document.getElementById(id); };
   var statusEl = $('status');
 
+  var warmStream = null;
+  var popupWin = null;
+
   function setStatus(html, type) {
     var colors = { ok: '#28a745', err: '#dc3545', warn: '#856404', info: '#0c5460' };
     statusEl.style.display = 'block';
@@ -90,7 +95,6 @@
   $('d-sec').textContent = window.isSecureContext;
   $('d-origin').textContent = location.origin;
   $('d-bd').textContent = ('BarcodeDetector' in window);
-  $('d-open').textContent = typeof window.open;
 
   try {
     if (navigator.permissions && navigator.permissions.query) {
@@ -107,30 +111,46 @@
     $('d-camperm').textContent = 'unsupported';
   }
 
-  /* ---------- Warm up camera ---------- */
+  /* ============ WARM UP — keep stream alive ============ */
   $('warmBtn').addEventListener('click', async function () {
     setStatus('Meminta izin kamera…', 'info');
     try {
-      var s = await navigator.mediaDevices.getUserMedia({ video: true });
-      s.getTracks().forEach(function (t) { t.stop(); });
+      if (warmStream) {
+        warmStream.getTracks().forEach(function (t) { t.stop(); });
+        warmStream = null;
+      }
+      warmStream = await navigator.mediaDevices.getUserMedia({
+        video: { facingMode: 'environment', width: { ideal: 1280 }, height: { ideal: 720 } },
+        audio: false
+      });
+      // JANGAN stop — tetap hidup agar bisa dipass ke popup
+      $('preview').style.display = 'block';
+      $('previewVideo').srcObject = warmStream;
       $('openBtn').disabled = false;
-      setStatus('✅ Izin kamera granted. Lanjut ke langkah 2.', 'ok');
+      $('d-warm').textContent = 'active (' + warmStream.getVideoTracks().length + ' track)';
+      setStatus('✅ Kamera granted & stream AKTIF. Lanjut klik langkah 2.', 'ok');
     } catch (e) {
       setStatus(
         '<strong>❌ Kamera gagal:</strong> <code>' + e.name + ': ' + e.message + '</code><br>' +
-        '<small><code>NotAllowedError</code>: klik 🔒 di address bar → izinkan kamera, ulangi.<br>' +
-        '<code>NotFoundError</code>: tidak ada kamera terpasang.</small>',
+        '<small>Klik 🔒 di address bar → izinkan kamera, lalu ulangi.</small>',
         'err');
     }
   });
 
-  /* ---------- Open popup ---------- */
+  /* ============ OPEN POPUP ============ */
   $('openBtn').addEventListener('click', function () {
+    if (!warmStream) {
+      setStatus('⚠️ Klik langkah 1 dulu untuk grant kamera.', 'warn');
+      return;
+    }
     statusEl.style.display = 'none';
     setStatus('Membuka popup…', 'info');
 
-    var w = openBlankWindow();
-    if (!w) {
+    if (popupWin && !popupWin.closed) {
+      popupWin.close();
+    }
+    popupWin = openBlankWindow();
+    if (!popupWin) {
       showIframeFallback();
       setStatus(
         '<strong>⚠️ Popup diblokir.</strong> Scanner muncul di iframe fallback di bawah.<br>' +
@@ -140,23 +160,37 @@
     }
 
     try {
-      var ok = injectPopup(w);
-      if (ok) {
-        var info = '';
-        try {
-          info = ' <code>href=' + w.location.href + '</code>, <code>origin=' + w.location.origin + '</code>';
-        } catch (e) {
-          info = ' <span style="color:#dc3545">(origin tidak terbaca: ' + e.name + ')</span>';
-        }
-        setStatus('✅ Popup <code>about:blank</code> terbuka.' + info + '<br>Lanjut scan QR di jendela popup.', 'ok');
-      } else {
+      var ok = injectPopup(popupWin);
+      if (!ok) {
         setStatus('⚠️ Popup terbuka tapi konten gagal di-inject. Cek Console (F12).', 'warn');
+        return;
       }
+
+      // PASS STREAM ke popup setelah script siap
+      setTimeout(function () {
+        try {
+          if (popupWin.__initParentStream) {
+            popupWin.__initParentStream(warmStream);
+          }
+          var info = '';
+          try {
+            info = ' <code>href=' + popupWin.location.href +
+                   '</code>, <code>origin=' + popupWin.location.origin + '</code>';
+          } catch (e) {
+            info = ' <span style="color:#dc3545">(origin tidak terbaca: ' + e.name + ')</span>';
+          }
+          setStatus('✅ Popup <code>about:blank</code> terbuka & stream dipass.' + info +
+                    '<br>Di popup: klik <strong>Start Scanning</strong>.', 'ok');
+        } catch (e) {
+          setStatus('⚠️ Stream gagal dipass: <code>' + e.name + ': ' + e.message + '</code>', 'warn');
+        }
+      }, 100);
+
     } catch (e) {
       setStatus('❌ Gagal inject: <code>' + e.message + '</code>', 'err');
       console.error('[PoC] inject failed:', e);
     }
-    w.focus();
+    popupWin.focus();
   });
 
   function openBlankWindow() {
@@ -201,30 +235,48 @@
 
   function showIframeFallback() {
     var iframe = $('fallbackIframe');
-    if (!iframe.dataset.loaded) { iframe.srcdoc = popupHTML(); iframe.dataset.loaded = '1'; }
+    if (!iframe.dataset.loaded) {
+      // Iframe fallback: kirim stream ke iframe juga
+      iframe.srcdoc = popupHTML();
+      iframe.dataset.loaded = '1';
+      iframe.addEventListener('load', function () {
+        try {
+          if (iframe.contentWindow.__initParentStream && warmStream) {
+            iframe.contentWindow.__initParentStream(warmStream);
+          }
+        } catch (e) { console.warn('iframe stream pass failed:', e); }
+      }, { once: true });
+    }
     $('iframeFallback').style.display = 'block';
     $('iframeFallback').scrollIntoView({ behavior: 'smooth' });
   }
 
-  /* ---------- Test popup ---------- */
+  /* ============ Test popup ============ */
   $('testBtn').addEventListener('click', function () {
     statusEl.style.display = 'none';
-    var w = window.open('about:blank', '_blank', 'width=400,height=300');
-    if (!w) { setStatus('❌ Popup diblokir bahkan untuk test. Popup blocker aktif.', 'err'); return; }
+    var w = window.open('about:blank', '_blank', 'width=400,height=320');
+    if (!w) { setStatus('❌ Popup diblokir bahkan untuk test.', 'err'); return; }
     try {
       var doc = w.document;
+      var camStateInPopup = 'querying…';
       doc.body.innerHTML = '<h2>✅ Test OK</h2>' +
-        '<p>href: <code>about:blank</code></p>' +
-        '<p>origin (popup): <code>' + doc.location.origin + '</code></p>' +
-        '<p>origin (parent): <code>' + w.location.origin + '</code></p>' +
-        '<p>window.opener: <code>' + (w.opener ? 'connected' : 'null') + '</code></p>';
-      setStatus('✅ Test popup berhasil. Mekanisme popup OK.', 'ok');
+        '<p>href: <code>' + doc.location.href + '</code></p>' +
+        '<p>origin: <code>' + doc.location.origin + '</code></p>' +
+        '<p>window.opener: <code>' + (w.opener ? 'connected' : 'null') + '</code></p>' +
+        '<p>camera in about:blank: <code id="camstate">' + camStateInPopup + '</code></p>' +
+        '<p style="color:#dc3545"><strong>Catatan:</strong> camera di <code>about:blank</code> tidak diizinkan Chromium — itu <em>by design</em>. Stream dari parent akan dipass via <code>video.srcObject</code>.</p>';
+      if (w.navigator.permissions) {
+        w.navigator.permissions.query({ name: 'camera' })
+          .then(function (p) { doc.getElementById('camstate').textContent = p.state; })
+          .catch(function (e) { doc.getElementById('camstate').textContent = 'error: ' + e.name; });
+      }
+      setStatus('✅ Test popup berhasil.', 'ok');
     } catch (e) {
       setStatus('⚠️ Popup terbuka tapi DOM gagal: <code>' + e.name + ': ' + e.message + '</code>', 'err');
     }
   });
 
-  /* ---------- Popup HTML ---------- */
+  /* ============ Popup HTML ============ */
   function popupHTML() {
     return `<!DOCTYPE html>
 <html lang="id">
@@ -237,7 +289,7 @@
   h3 { font-size: 1em; margin: 16px 0 6px; }
   .meta { background: #fff; border: 1px solid #ddd; border-radius: 6px; padding: 10px 12px; font-size: 13px; font-family: ui-monospace, monospace; }
   .meta div { margin: 2px 0; }
-  .meta .label { color: #666; display: inline-block; width: 120px; }
+  .meta .label { color: #666; display: inline-block; width: 140px; }
   video { width: 100%; max-width: 480px; border-radius: 8px; background: #000; display: block; margin: 12px auto; }
   button { padding: 9px 16px; font-size: 14px; border-radius: 5px; border: 0; cursor: pointer; background: #007bff; color: #fff; margin: 4px 4px 4px 0; }
   button:hover:not(:disabled) { background: #0056b3; }
@@ -252,6 +304,7 @@
   .status { font-size: 13px; color: #555; margin-top: 6px; }
   .ok { color: #28a745; }
   .err { color: #dc3545; }
+  .note { background: #d1ecf1; border-left: 4px solid #17a2b8; padding: 8px 12px; border-radius: 4px; font-size: 12px; margin: 8px 0; }
   #fileFallback { display: none; margin-top: 12px; padding: 12px; background: #fff3cd; border-radius: 6px; border-left: 4px solid #ffc107; }
   #fileFallback label { display: block; margin-top: 8px; }
 </style>
@@ -262,17 +315,20 @@
   <div><span class="label">location.href:</span><strong id="mHref">?</strong></div>
   <div><span class="label">location.origin:</span><strong id="mOrigin">?</strong></div>
   <div><span class="label">window.opener:</span><strong id="mOpener">?</strong></div>
-  <div><span class="label">isSecureContext:</span><strong id="mSec">?</strong></div>
+  <div><span class="label">camera (native):</span><strong id="mCam">?</strong></div>
+</div>
+<div class="note" id="streamNote">
+  Kamera native di <code>about:blank</code> diblokir Chromium. Stream akan dipass dari parent.
 </div>
 <h3>1. Scan QR</h3>
 <video id="video" autoplay playsinline muted></video>
 <div>
-  <button id="startBtn">▶ Start Camera</button>
+  <button id="startBtn" disabled>▶ Start Scanning</button>
   <button id="stopBtn" class="gray" disabled>⏹ Stop</button>
 </div>
-<div class="status" id="scanStatus">Kamera idle.</div>
+<div class="status" id="scanStatus">Menunggu stream dari parent…</div>
 <div id="fileFallback">
-  <strong>⚠️ Kamera tidak bisa diakses.</strong> Pakai fallback:
+  <strong>⚠️ Stream kamera tidak tersedia.</strong> Pakai fallback:
   <label><input type="file" accept="image/*" capture="environment" id="fileCapture" style="display:none"><button type="button" id="captureBtn" class="success">📷 Take Photo</button></label>
   <label><input type="file" accept="image/*" id="fileUpload" style="display:none"><button type="button" id="uploadBtn">🖼 Upload Image</button></label>
 </div>
@@ -291,12 +347,39 @@
   $('mHref').textContent = location.href;
   $('mOrigin').textContent = location.origin;
   $('mOpener').textContent = window.opener ? 'connected' : 'null (severed)';
-  $('mSec').textContent = window.isSecureContext;
 
-  var stream = null, rafId = null, detector = null, jsQRReady = false;
+  // Cek camera permission native (harusnya denied/prompt di about:blank)
+  if (navigator.permissions && navigator.permissions.query) {
+    navigator.permissions.query({ name: 'camera' }).then(function(p){
+      $('mCam').textContent = p.state + ' (expected: not-granted)';
+    }).catch(function(e){ $('mCam').textContent = 'error: ' + e.name; });
+  } else {
+    $('mCam').textContent = 'unsupported';
+  }
+
+  var stream = null;
+  var parentStream = null;
+  var ownsStream = false;
+  var rafId = null, detector = null, jsQRReady = false;
   var scanActive = false, scannedCode = '';
   var canvas = document.createElement('canvas');
   var ctx = canvas.getContext('2d', { willReadFrequently: true });
+
+  /* ---------- Dipanggil parent setelah injection ---------- */
+  window.__initParentStream = function(s) {
+    parentStream = s;
+    var v = $('video');
+    if (v && s) {
+      try {
+        v.srcObject = s;
+        v.play().catch(function(){});
+      } catch (e) { console.warn('srcObject set failed:', e); }
+    }
+    $('streamNote').innerHTML = '<span class="ok">✅ Stream kamera diterima dari parent.</span>';
+    $('scanStatus').innerHTML = '<span class="ok">✅ Kamera siap (via parent). Klik Start Scanning.</span>';
+    $('startBtn').textContent = '▶ Start Scanning';
+    $('startBtn').disabled = false;
+  };
 
   async function ensureDetector() {
     if ('BarcodeDetector' in window) {
@@ -316,13 +399,26 @@
 
   async function startScan() {
     try {
-      $('scanStatus').textContent = 'Menyiapkan kamera…';
-      stream = await navigator.mediaDevices.getUserMedia({
-        video: { facingMode: 'environment', width: { ideal: 1280 }, height: { ideal: 720 } },
-        audio: false
-      });
-      $('video').srcObject = stream;
-      await $('video').play();
+      if (parentStream) {
+        stream = parentStream;
+        ownsStream = false;
+        $('video').srcObject = stream;
+        await $('video').play();
+      } else {
+        // Fallback: coba getUserMedia sendiri (akan gagal di about:blank)
+        try {
+          stream = await navigator.mediaDevices.getUserMedia({
+            video: { facingMode: 'environment' }, audio: false
+          });
+          ownsStream = true;
+          $('video').srcObject = stream;
+          await $('video').play();
+        } catch (e) {
+          $('fileFallback').style.display = 'block';
+          $('scanStatus').innerHTML = '<span class="err">❌ getUserMedia gagal: ' + e.name + '</span>';
+          return;
+        }
+      }
       detector = await ensureDetector();
       $('scanStatus').textContent = detector ? '📷 Scanning (BarcodeDetector)…' : '📷 Scanning (jsQR)…';
       scanActive = true;
@@ -330,7 +426,7 @@
       $('stopBtn').disabled = false;
       loop();
     } catch (e) {
-      $('scanStatus').innerHTML = '<span class="err">❌ Kamera gagal: ' + e.name + ': ' + e.message + '</span>';
+      $('scanStatus').innerHTML = '<span class="err">❌ ' + e.name + ': ' + e.message + '</span>';
       $('fileFallback').style.display = 'block';
     }
   }
@@ -362,7 +458,11 @@
   function stopScan() {
     scanActive = false;
     if (rafId) { cancelAnimationFrame(rafId); rafId = null; }
-    if (stream) { stream.getTracks().forEach(function(t){ t.stop(); }); stream = null; }
+    // HANYA stop kalau kita yang buka (ownsStream)
+    if (stream && ownsStream) {
+      stream.getTracks().forEach(function(t){ t.stop(); });
+    }
+    // Kalau parentStream: jangan stop, parent yang punya
     $('startBtn').disabled = false;
     $('stopBtn').disabled = true;
   }
@@ -397,7 +497,7 @@
     if (!code) { $('execStatus').textContent = '⚠️ Tidak ada kode.'; return; }
     $('log').style.display = 'block';
     $('log').textContent = '► Executing in about:blank…';
-    $('execStatus').textContent = 'Kode dijalankan. Permission dialog (jika muncul) akan menampilkan about:blank.';
+    $('execStatus').textContent = 'Kode dijalankan. Permission dialog (Bluetooth/USB/Passkey/dll.) akan menampilkan about:blank.';
     var wrapped = '(async () => {\n' + code + '\n})().catch(e => {' +
       '  var l = document.getElementById("log");' +
       '  if (l) l.textContent += "\\n✗ " + e.name + ": " + e.message;' +
